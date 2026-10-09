@@ -1,5 +1,6 @@
 /* See LICENSE for license details. */
 #include <errno.h>
+#include <string.h>
 #include <math.h>
 #include <limits.h>
 #include <locale.h>
@@ -14,6 +15,8 @@
 #include <X11/keysym.h>
 #include <X11/Xft/Xft.h>
 #include <X11/XKBlib.h>
+#include <X11/extensions/Xrender.h>
+#include <wchar.h>
 
 char *argv0;
 #include "arg.h"
@@ -59,9 +62,12 @@ static void zoom(const Arg *);
 static void zoomabs(const Arg *);
 static void zoomreset(const Arg *);
 static void ttysend(const Arg *);
+static void newwindow(const Arg *);
+static int ala_handle(unsigned int mods, KeySym ks, unsigned int button);
 
 /* config.h for applying patches and the configuration. */
 #include "config.h"
+#include "alacritty.h"
 
 /* XEMBED messages */
 #define XEMBED_FOCUS_IN  4
@@ -107,6 +113,7 @@ typedef struct {
 	int isfixed; /* is fixed geometry? */
 	int l, t; /* left and top offset */
 	int gm; /* geometry mask */
+	int depth;
 } XWindow;
 
 typedef struct {
@@ -251,8 +258,21 @@ static char *opt_io    = NULL;
 static char *opt_line  = NULL;
 static char *opt_name  = NULL;
 static char *opt_title = NULL;
+static char *opt_config = NULL;
+static char *opt_overrides[64];
+static int noverrides = 0;
+static AlaConfig alacfg;
 
 static uint buttons; /* bit field of pressed buttons */
+
+/* Defined here, not in config.h, so an existing config.h still builds. */
+float winopacity = 1.0;
+int histsize = 10000;
+int scrollmult = 3;
+int savetoclipboard = 0;
+int dynamicpadding = 0;
+int decorations_none = 0;
+char *initial_workdir = NULL;
 
 void
 clipcopy(const Arg *dummy)
@@ -357,8 +377,11 @@ mousesel(XEvent *e, int done)
 		}
 	}
 	selextend(evcol(e), evrow(e), seltype, done);
-	if (done)
+	if (done) {
 		setsel(getsel(), e->xbutton.time);
+		if (savetoclipboard)
+			clipcopy(NULL);
+	}
 }
 
 void
@@ -480,8 +503,21 @@ bpress(XEvent *e)
 		return;
 	}
 
+	if (ala_handle(e->xbutton.state, NoSymbol, btn))
+		return;
+
 	if (mouseaction(e, 0))
 		return;
+
+	/* Wheel scrolls history unless the application owns the mouse. */
+	if (btn == Button4 || btn == Button5) {
+		Arg a = {.i = 0};
+		if (btn == Button4)
+			kscrollup(&a);
+		else
+			kscrolldown(&a);
+		return;
+	}
 
 	if (btn == Button1) {
 		/*
@@ -752,7 +788,7 @@ xresize(int col, int row)
 
 	XFreePixmap(xw.dpy, xw.buf);
 	xw.buf = XCreatePixmap(xw.dpy, xw.win, win.w, win.h,
-			DefaultDepth(xw.dpy, xw.scr));
+			xw.depth);
 	XftDrawChange(xw.draw, xw.buf);
 	xclear(0, 0, win.w, win.h);
 
@@ -787,7 +823,16 @@ xloadcolor(int i, const char *name, Color *ncolor)
 			name = colorname[i];
 	}
 
-	return XftColorAllocName(xw.dpy, xw.vis, xw.cmap, name, ncolor);
+	if (!XftColorAllocName(xw.dpy, xw.vis, xw.cmap, name, ncolor))
+		return 0;
+	/* Alacritty window.opacity applies to the default background. */
+	if (i == defaultbg && winopacity >= 0.f && winopacity < 1.f) {
+		XRenderColor c = ncolor->color;
+		c.alpha = (unsigned short)(winopacity * 0xffff);
+		XftColorFree(xw.dpy, xw.vis, xw.cmap, ncolor);
+		return XftColorAllocValue(xw.dpy, xw.vis, xw.cmap, &c, ncolor);
+	}
+	return 1;
 }
 
 void
@@ -1138,7 +1183,17 @@ xinit(int cols, int rows)
 	if (!(xw.dpy = XOpenDisplay(NULL)))
 		die("can't open display\n");
 	xw.scr = XDefaultScreen(xw.dpy);
+	xw.depth = XDefaultDepth(xw.dpy, xw.scr);
 	xw.vis = XDefaultVisual(xw.dpy, xw.scr);
+	{
+		XVisualInfo vis;
+		XRenderPictFormat *fmt = XRenderFindStandardFormat(xw.dpy, PictStandardARGB32);
+		if (winopacity < 1.f && fmt &&
+		    XMatchVisualInfo(xw.dpy, xw.scr, 32, TrueColor, &vis)) {
+			xw.vis = vis.visual;
+			xw.depth = 32;
+		}
+	}
 
 	/* font */
 	if (!FcInit())
@@ -1148,7 +1203,11 @@ xinit(int cols, int rows)
 	xloadfonts(usedfont, 0);
 
 	/* colors */
-	xw.cmap = XDefaultColormap(xw.dpy, xw.scr);
+	if (xw.depth == 32)
+		xw.cmap = XCreateColormap(xw.dpy, XRootWindow(xw.dpy, xw.scr),
+		                          xw.vis, AllocNone);
+	else
+		xw.cmap = XDefaultColormap(xw.dpy, xw.scr);
 	xloadcols();
 
 	/* adjust fixed window geometry */
@@ -1172,7 +1231,7 @@ xinit(int cols, int rows)
 	if (!(opt_embed && (parent = strtol(opt_embed, NULL, 0))))
 		parent = root;
 	xw.win = XCreateWindow(xw.dpy, root, xw.l, xw.t,
-			win.w, win.h, 0, XDefaultDepth(xw.dpy, xw.scr), InputOutput,
+			win.w, win.h, 0, xw.depth, InputOutput,
 			xw.vis, CWBackPixel | CWBorderPixel | CWBitGravity
 			| CWEventMask | CWColormap, &xw.attrs);
 	if (parent != root)
@@ -1183,7 +1242,7 @@ xinit(int cols, int rows)
 	dc.gc = XCreateGC(xw.dpy, xw.win, GCGraphicsExposures,
 			&gcvalues);
 	xw.buf = XCreatePixmap(xw.dpy, xw.win, win.w, win.h,
-			DefaultDepth(xw.dpy, xw.scr));
+			xw.depth);
 	XSetForeground(xw.dpy, dc.gc, dc.col[defaultbg].pixel);
 	XFillRectangle(xw.dpy, xw.buf, dc.gc, 0, 0, win.w, win.h);
 
@@ -1230,6 +1289,17 @@ xinit(int cols, int rows)
 	win.mode = MODE_NUMLOCK;
 	resettitle();
 	xhints();
+	if (decorations_none) {
+		/* Motif WM hint: no title bar / borders. */
+		struct {
+			unsigned long flags, functions, decorations;
+			long input_mode;
+			unsigned long status;
+		} mwm = { .flags = 2, .decorations = 0 };
+		Atom a = XInternAtom(xw.dpy, "_MOTIF_WM_HINTS", False);
+		XChangeProperty(xw.dpy, xw.win, a, a, 32, PropModeReplace,
+		                (unsigned char *)&mwm, 5);
+	}
 	XMapWindow(xw.dpy, xw.win);
 	XSync(xw.dpy, False);
 
@@ -1859,7 +1929,10 @@ kpress(XEvent *ev)
 	} else {
 		len = XLookupString(e, buf, sizeof buf, &ksym, NULL);
 	}
-	/* 1. shortcuts */
+	/* 1. alacritty.toml bindings, then compiled-in Alacritty defaults */
+	if (ala_handle(e->state, ksym, 0))
+		return;
+
 	for (bp = shortcuts; bp < shortcuts + LEN(shortcuts); bp++) {
 		if (ksym == bp->keysym && match(bp->mod, e->state)) {
 			bp->func(&(bp->arg));
@@ -2023,12 +2096,235 @@ run(void)
 	}
 }
 
+
+static void
+newwindow(const Arg *dummy)
+{
+	pid_t p;
+
+	(void)dummy;
+	switch ((p = fork())) {
+	case -1:
+		return;
+	case 0:
+		setsid();
+		execlp(argv0, argv0, (char *)NULL);
+		_exit(127);
+	}
+}
+
+static void
+ala_run(const AlaBind *b)
+{
+	Arg a;
+
+	switch (b->action) {
+	case ALA_COPY:
+		clipcopy(NULL);
+		break;
+	case ALA_PASTE:
+		clippaste(NULL);
+		break;
+	case ALA_PASTE_SEL:
+		selpaste(NULL);
+		break;
+	case ALA_FONT_INC:
+		a.f = +1;
+		zoom(&a);
+		break;
+	case ALA_FONT_DEC:
+		a.f = -1;
+		zoom(&a);
+		break;
+	case ALA_FONT_RESET:
+		a.f = 0;
+		zoomreset(&a);
+		break;
+	case ALA_SCROLL_PAGE_UP:
+		a.i = -1;
+		kscrollup(&a);
+		break;
+	case ALA_SCROLL_PAGE_DOWN:
+		a.i = -1;
+		kscrolldown(&a);
+		break;
+	case ALA_SCROLL_HALF_UP:
+		a.i = -3;
+		kscrollup(&a);
+		break;
+	case ALA_SCROLL_HALF_DOWN:
+		a.i = -3;
+		kscrolldown(&a);
+		break;
+	case ALA_SCROLL_LINE_UP:
+		a.i = 1;
+		kscrollup(&a);
+		break;
+	case ALA_SCROLL_LINE_DOWN:
+		a.i = 1;
+		kscrolldown(&a);
+		break;
+	case ALA_SCROLL_TOP:
+		a.i = -2;
+		kscrollup(&a);
+		break;
+	case ALA_SCROLL_BOTTOM:
+		a.i = -2;
+		kscrolldown(&a);
+		break;
+	case ALA_CLEAR_HIST:
+		tclearhist();
+		break;
+	case ALA_NEW_WINDOW:
+		newwindow(NULL);
+		break;
+	case ALA_CHARS:
+		ttywrite(b->chars, strlen(b->chars), 1);
+		break;
+	default:
+		break;
+	}
+}
+
+/* Returns 1 if the event was consumed. ALA_RECEIVE is not consumed. */
+static int
+ala_handle(unsigned int mods, KeySym ks, unsigned int button)
+{
+	int i;
+	unsigned int state = mods & ~ignoremod;
+
+	for (i = 0; i < alacfg.nbinds; i++) {
+		AlaBind *b = &alacfg.binds[i];
+		if (button) {
+			if (b->button != button || b->mods != (state & (ControlMask|ShiftMask|Mod1Mask|Mod4Mask)))
+				continue;
+		} else {
+			if (!b->keysym || b->keysym != ks)
+				continue;
+			if (b->mods != (state & (ControlMask|ShiftMask|Mod1Mask|Mod4Mask)))
+				continue;
+		}
+		if (b->action == ALA_RECEIVE)
+			return 0;
+		if (b->action == ALA_NONE)
+			return 1;
+		ala_run(b);
+		return 1;
+	}
+	return 0;
+}
+
+static void
+ala_apply(void)
+{
+	int i;
+
+	memset(&alacfg, 0, sizeof alacfg);
+	alacritty_load(&alacfg, opt_config, opt_overrides, noverrides);
+	if (!alacfg.loaded && !noverrides)
+		return;
+	if (alacfg.font && !opt_font)
+		font = alacfg.font;
+	if (alacfg.opacity >= 0)
+		winopacity = alacfg.opacity;
+	if (alacfg.history >= 0)
+		histsize = alacfg.history;
+	if (alacfg.multiplier > 0)
+		scrollmult = alacfg.multiplier;
+	if (alacfg.pad_x >= 0 || alacfg.pad_y >= 0) {
+		int px = alacfg.pad_x >= 0 ? alacfg.pad_x : 0;
+		int py = alacfg.pad_y >= 0 ? alacfg.pad_y : 0;
+		borderpx = px > py ? px : py;
+	}
+	if (alacfg.dynamic_padding >= 0)
+		dynamicpadding = alacfg.dynamic_padding;
+	if (alacfg.decorations_none >= 0)
+		decorations_none = alacfg.decorations_none;
+	if (alacfg.save_to_clipboard >= 0)
+		savetoclipboard = alacfg.save_to_clipboard;
+	if (alacfg.cursor_shape)
+		cursorshape = alacfg.cursor_shape;
+	if (alacfg.cursor_blink == 0)
+		blinktimeout = 0;
+	else if (alacfg.cursor_blink == 1 && blinktimeout == 0)
+		blinktimeout = 800;
+	if (alacfg.cursor_thickness >= 0)
+		cursorthickness = (unsigned)(alacfg.cursor_thickness * 16);
+	if (alacfg.fg)
+		colorname[defaultfg] = alacfg.fg;
+	if (alacfg.bg)
+		colorname[defaultbg] = alacfg.bg;
+	if (alacfg.cursor_color && strcmp(alacfg.cursor_color, "CellForeground"))
+		colorname[defaultcs] = alacfg.cursor_color;
+	if (alacfg.cursor_text && strcmp(alacfg.cursor_text, "CellBackground"))
+		colorname[defaultrcs] = alacfg.cursor_text;
+	for (i = 0; i < 8; i++) {
+		if (alacfg.normal[i])
+			colorname[i] = alacfg.normal[i];
+		if (alacfg.bright[i])
+			colorname[8 + i] = alacfg.bright[i];
+	}
+	if (alacfg.shell)
+		shell = alacfg.shell;
+	if (alacfg.shell_argc && !opt_cmd) {
+		static char *argv_shell[ALA_MAX_ARGS + 2];
+		argv_shell[0] = alacfg.shell ? alacfg.shell : shell;
+		for (i = 0; i < alacfg.shell_argc; i++)
+			argv_shell[i + 1] = alacfg.shell_args[i];
+		argv_shell[alacfg.shell_argc + 1] = NULL;
+		opt_cmd = argv_shell;
+	}
+	if (alacfg.workdir)
+		initial_workdir = alacfg.workdir;
+	if (alacfg.term)
+		termname = alacfg.term;
+	if (alacfg.worddelims) {
+		static wchar_t wbuf[128];
+		mbstowcs(wbuf, alacfg.worddelims, 127);
+		wbuf[127] = 0;
+		worddelimiters = wbuf;
+	}
+	if (alacfg.path[0])
+		fprintf(stderr, "st: using alacritty config %s\n", alacfg.path);
+}
+
+static void
+preparse_longopts(int *argc, char ***argvp)
+{
+	char **av = *argvp;
+	int i, w = 1;
+
+	for (i = 1; i < *argc; i++) {
+		if (!strcmp(av[i], "--config-file") && i + 1 < *argc) {
+			opt_config = av[++i];
+		} else if (!strncmp(av[i], "--config-file=", 14)) {
+			opt_config = av[i] + 14;
+		} else if (!strcmp(av[i], "--option") && i + 1 < *argc) {
+			if (noverrides < 64)
+				opt_overrides[noverrides++] = av[++i];
+		} else if (!strncmp(av[i], "--option=", 9)) {
+			if (noverrides < 64)
+				opt_overrides[noverrides++] = av[i] + 9;
+		} else if (!strcmp(av[i], "--working-directory") && i + 1 < *argc) {
+			initial_workdir = av[++i];
+		} else if (!strcmp(av[i], "--help")) {
+			usage();
+		} else {
+			av[w++] = av[i];
+		}
+	}
+	av[w] = NULL;
+	*argc = w;
+}
+
 void
 usage(void)
 {
 	die("usage: %s [-aiv] [-c class] [-f font] [-g geometry]"
 	    " [-n name] [-o file]\n"
-	    "          [-T title] [-t title] [-w windowid]"
+	    "          [-T title] [-t title] [-w windowid]\n"
+	    "          [--config-file file] [--option toml]\n"
+	    "          [--working-directory dir]"
 	    " [[-e] command [args ...]]\n"
 	    "       %s [-aiv] [-c class] [-f font] [-g geometry]"
 	    " [-n name] [-o file]\n"
@@ -2041,6 +2337,8 @@ main(int argc, char *argv[])
 {
 	xw.l = xw.t = 0;
 	xw.isfixed = False;
+	preparse_longopts(&argc, &argv);
+	ala_apply();
 	xsetcursor(cursorshape);
 
 	ARGBEGIN {

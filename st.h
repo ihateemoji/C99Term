@@ -99,6 +99,12 @@ void ttywrite(const char *, size_t, int);
 void resettitle(void);
 
 void selclear(void);
+void kscrollup(const Arg *);
+void kscrolldown(const Arg *);
+void tclearhist(void);
+extern int histsize;
+extern int scrollmult;
+extern char *initial_workdir;
 void selinit(void);
 void selstart(int, int, int);
 void selextend(int, int, int, int);

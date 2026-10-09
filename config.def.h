@@ -5,8 +5,9 @@
  *
  * font: see http://freedesktop.org/software/fontconfig/fontconfig-user.html
  */
-static char *font = "Liberation Mono:pixelsize=12:antialias=true:autohint=true";
-static int borderpx = 2;
+static char *font = "monospace:size=11.25:antialias=true:autohint=true";
+static int borderpx = 0;
+
 
 /*
  * What program is execed by st depends of these precedence rules:
@@ -74,7 +75,7 @@ static unsigned int cursorthickness = 2;
 static int bellvolume = 0;
 
 /* default TERM value */
-char *termname = "st-256color";
+char *termname = "xterm-256color";
 
 /*
  * spaces per tab
@@ -94,7 +95,7 @@ char *termname = "st-256color";
 unsigned int tabspaces = 8;
 
 /* Terminal colors (16 first used in escape sequence) */
-static const char *colorname[] = {
+static char *colorname[] = {
 	/* 8 normal colors */
 	"black",
 	"red3",
@@ -177,10 +178,10 @@ static uint forcemousemod = ShiftMask;
 static MouseShortcut mshortcuts[] = {
 	/* mask                 button   function        argument       release */
 	{ XK_ANY_MOD,           Button2, selpaste,       {.i = 0},      1 },
-	{ ShiftMask,            Button4, ttysend,        {.s = "\033[5;2~"} },
-	{ XK_ANY_MOD,           Button4, ttysend,        {.s = "\031"} },
-	{ ShiftMask,            Button5, ttysend,        {.s = "\033[6;2~"} },
-	{ XK_ANY_MOD,           Button5, ttysend,        {.s = "\005"} },
+	/* Shift+wheel always scrolls history (Alacritty forcemouse).
+	 * Unshifted wheel scrolls history unless the app is in mouse mode. */
+	{ ShiftMask,            Button4, kscrollup,      {.i =  0},     0 },
+	{ ShiftMask,            Button5, kscrolldown,    {.i =  0},     0 },
 };
 
 /* Internal keyboard shortcuts. */
@@ -196,10 +197,22 @@ static Shortcut shortcuts[] = {
 	{ TERMMOD,              XK_Prior,       zoom,           {.f = +1} },
 	{ TERMMOD,              XK_Next,        zoom,           {.f = -1} },
 	{ TERMMOD,              XK_Home,        zoomreset,      {.f =  0} },
+	/* Alacritty Linux/BSD defaults (alacritty-bindings(5)). */
 	{ TERMMOD,              XK_C,           clipcopy,       {.i =  0} },
 	{ TERMMOD,              XK_V,           clippaste,      {.i =  0} },
 	{ TERMMOD,              XK_Y,           selpaste,       {.i =  0} },
 	{ ShiftMask,            XK_Insert,      selpaste,       {.i =  0} },
+	{ ShiftMask,            XK_Prior,       kscrollup,      {.i = -1} },
+	{ ShiftMask,            XK_Next,        kscrolldown,    {.i = -1} },
+	{ ShiftMask,            XK_Home,        kscrollup,      {.i = -2} },
+	{ ShiftMask,            XK_End,         kscrolldown,    {.i = -2} },
+	{ ControlMask,          XK_equal,       zoom,           {.f = +1} },
+	{ ControlMask,          XK_plus,        zoom,           {.f = +1} },
+	{ ControlMask,          XK_KP_Add,      zoom,           {.f = +1} },
+	{ ControlMask,          XK_minus,       zoom,           {.f = -1} },
+	{ ControlMask,          XK_KP_Subtract, zoom,           {.f = -1} },
+	{ ControlMask,          XK_0,           zoomreset,      {.f =  0} },
+	{ TERMMOD,              XK_N,           newwindow,      {.i =  0} },
 	{ TERMMOD,              XK_Num_Lock,    numlock,        {.i =  0} },
 };
 
