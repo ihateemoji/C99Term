@@ -5,8 +5,7 @@ It reads an Alacritty config (TOML or YAML) and matches the Linux clipboard,
 scrollback, font and window behaviour closely enough to reuse that file.
 
 This is still st. It is not a GPU terminal and it does not implement Vi mode,
-search, hints or Wayland. The original MIT/X licence and authors are in
-`src/LICENSE`.
+search, hints or Wayland. 
 
 ## Build
 
