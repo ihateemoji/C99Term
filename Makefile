@@ -1,5 +1,5 @@
 # C99Term — st fork with an Alacritty-compatible config
-# See src/LICENSE for the original st MIT/X notice.
+# See LICENSE for the original st MIT/X notice.
 .POSIX:
 
 include config.mk
