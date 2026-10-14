@@ -2,7 +2,7 @@
 
 A C99 fork of [st](https://st.suckless.org/). It reads an Alacritty config (TOML or YAML) and matches the Linux clipboard, scrollback, font, and window behaviour closely enough to reuse that file.
 
-This is still st. It is not a GPU terminal, and it does not implement Vi mode, search, hints or Wayland (f Wayland). 
+This is still st. It is not a GPU terminal, and it does not implement Vi mode, search, hints or Wayland (f*** Wayland). 
 
 ## Build
 
