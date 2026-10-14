@@ -25,12 +25,4 @@ STCPPFLAGS = -DVERSION=\"$(VERSION)\" -D_XOPEN_SOURCE=600
 STCFLAGS = $(INCS) $(STCPPFLAGS) $(CPPFLAGS) $(CFLAGS) -std=c99 -Wall
 STLDFLAGS = $(LIBS) $(LDFLAGS)
 
-# OpenBSD:
-#CPPFLAGS = -DVERSION=\"$(VERSION)\" -D_XOPEN_SOURCE=600 -D_BSD_SOURCE
-#LIBS = -L$(X11LIB) -lm -lX11 -lutil -lXft \
-#       `$(PKG_CONFIG) --libs fontconfig` \
-#       `$(PKG_CONFIG) --libs freetype2`
-#MANPREFIX = ${PREFIX}/man
-
-# compiler and linker
-# CC = c99
+CC ?= cc
