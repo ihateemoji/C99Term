@@ -34,5 +34,5 @@ jobs:
           prepare: |
             pkg install -y gmake pkgconf libX11 libXft libXrender fontconfig
           run: |
-            gmake
-            gmake test
+            gmake CC=cc
+            gmake CC=cc test
