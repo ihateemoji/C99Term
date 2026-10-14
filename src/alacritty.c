@@ -1,7 +1,6 @@
-/* Small TOML subset parser aimed at alacritty.toml (Alacritty >= 0.13).
- * Not a general TOML library: no datetimes, no hex integers, no dotted keys
- * inside inline tables beyond one level of expansion. Enough for colors,
- * fonts, opacity, scrollback, shell, env and keyboard/mouse bindings.
+/* C99Term config loader.
+ * TOML subset (Alacritty >= 0.13) and a YAML subset (older Alacritty).
+ * Window, scrolling, font, colors, cursor, selection, shell, env and bindings.
  */
 #include <ctype.h>
 #include <errno.h>
@@ -10,16 +9,69 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
+#ifdef ALA_NO_X11
+#define ShiftMask   (1<<0)
+#define ControlMask (1<<2)
+#define Mod1Mask    (1<<3)
+#define Mod4Mask    (1<<6)
+#define Button1 1
+#define Button2 2
+#define Button3 3
+#define Button4 4
+#define Button5 5
+#define XK_A 0x41
+#define XK_a 0x61
+#define XK_0 0x30
+#define XK_C 0x43
+#define XK_V 0x56
+#define XK_Prior 0xff55
+#define XK_Next 0xff56
+#define XK_Home 0xff50
+#define XK_End 0xff57
+#define XK_Insert 0xff63
+#define XK_Escape 0xff1b
+#define XK_space 0x20
+#define XK_Tab 0xff09
+#define XK_Return 0xff0d
+#define XK_BackSpace 0xff08
+#define XK_Delete 0xffff
+#define XK_Up 0xff52
+#define XK_Down 0xff54
+#define XK_Left 0xff51
+#define XK_Right 0xff53
+#define XK_equal 0x3d
+#define XK_plus 0x2b
+#define XK_minus 0x2d
+#define XK_KP_Add 0xffab
+#define XK_KP_Subtract 0xffad
+#else
 #include <X11/X.h>
 #include <X11/keysym.h>
-#include <strings.h>
+#endif
 
 #include "alacritty.h"
 
 #define MAX_KV 2048
 #define KEYLEN 192
 #define VALLEN 1024
+
+static int
+strcaseeq(const char *a, const char *b)
+{
+	unsigned char ca, cb;
+
+	if (!a || !b)
+		return 0;
+	while (*a && *b) {
+		ca = (unsigned char)*a++;
+		cb = (unsigned char)*b++;
+		if (tolower(ca) != tolower(cb))
+			return 0;
+	}
+	return *a == 0 && *b == 0;
+}
 
 typedef struct {
 	char key[KEYLEN];
@@ -29,6 +81,9 @@ typedef struct {
 
 static Kv kvs[MAX_KV];
 static int nkv;
+
+static int looks_yaml(const char *path, const char *buf);
+static void parse_yaml(const char *text);
 
 static void
 kvset(const char *key, const char *val, int is_str)
@@ -337,7 +392,7 @@ parse_toml(const char *text, const char *basedir, int depth);
 static char loaded_paths[32][4096];
 static int nloaded;
 
-static void
+static int
 load_file(const char *path, int depth)
 {
 	FILE *f;
@@ -347,34 +402,34 @@ load_file(const char *path, int depth)
 	int i;
 
 	if (depth > 16 || !path || !path[0])
-		return;
+		return 0;
 	for (i = 0; i < nloaded; i++)
 		if (!strcmp(loaded_paths[i], path))
-			return;
+			return 1;
 	if (nloaded < 32)
 		snprintf(loaded_paths[nloaded++], 4096, "%s", path);
 	f = fopen(path, "r");
 	if (!f)
-		return;
+		return 0;
 	if (fseek(f, 0, SEEK_END) != 0) {
 		fclose(f);
-		return;
+		return 0;
 	}
 	len = ftell(f);
 	if (len < 0 || len > 8 * 1024 * 1024) {
 		fclose(f);
-		return;
+		return 0;
 	}
 	rewind(f);
 	buf = malloc((size_t)len + 1);
 	if (!buf) {
 		fclose(f);
-		return;
+		return 0;
 	}
 	if (fread(buf, 1, (size_t)len, f) != (size_t)len) {
 		free(buf);
 		fclose(f);
-		return;
+		return 0;
 	}
 	buf[len] = 0;
 	fclose(f);
@@ -384,8 +439,12 @@ load_file(const char *path, int depth)
 		*slash = 0;
 	else
 		snprintf(dir, sizeof dir, ".");
-	parse_toml(buf, dir, depth);
+	if (looks_yaml(path, buf))
+		parse_yaml(buf);
+	else
+		parse_toml(buf, dir, depth);
 	free(buf);
+	return 1;
 }
 
 static void
@@ -503,6 +562,140 @@ parse_toml(const char *text, const char *basedir, int depth)
 }
 
 static int
+join2(char *dst, size_t dstlen, const char *a, const char *b, char sep)
+{
+	size_t na, nb;
+
+	if (!a || !b || dstlen == 0)
+		return 0;
+	na = strlen(a);
+	nb = strlen(b);
+	if (na + 1 + nb + 1 > dstlen)
+		return 0;
+	memcpy(dst, a, na);
+	dst[na] = sep;
+	memcpy(dst + na + 1, b, nb + 1);
+	return 1;
+}
+
+static int
+looks_yaml(const char *path, const char *buf)
+{
+	const char *ext = strrchr(path, '.');
+	const char *p;
+
+	if (ext && (strcaseeq(ext, ".yml") || strcaseeq(ext, ".yaml")))
+		return 1;
+	p = buf;
+	while (*p && isspace((unsigned char)*p))
+		p++;
+	if (*p == '[')
+		return 0;
+	return strchr(buf, ':') != NULL && strchr(buf, '=') == NULL;
+}
+
+/* Indentation-based YAML subset used by older Alacritty configs. */
+static void
+parse_yaml(const char *text)
+{
+	const char *p = text;
+	char stack[16][KEYLEN];
+	int ind[16];
+	int list_idx[16];
+	int depth = 0;
+	char line[1024];
+
+	memset(ind, 0, sizeof ind);
+	memset(list_idx, 0, sizeof list_idx);
+	stack[0][0] = 0;
+	while (*p) {
+		const char *eol = strchr(p, '\n');
+		int n, spaces = 0, i;
+		char key[96], val[VALLEN], full[KEYLEN];
+		const char *s;
+
+		if (!eol)
+			eol = p + strlen(p);
+		n = (int)(eol - p);
+		if (n >= (int)sizeof line)
+			n = (int)sizeof line - 1;
+		memcpy(line, p, (size_t)n);
+		line[n] = 0;
+		p = *eol ? eol + 1 : eol;
+
+		s = line;
+		while (*s == ' ') {
+			spaces++;
+			s++;
+		}
+		if (*s == '\0' || *s == '#' || *s == '\r')
+			continue;
+		while (depth > 0 && spaces <= ind[depth])
+			depth--;
+		if (*s == '-') {
+			s++;
+			while (*s == ' ')
+				s++;
+			if (depth > 0) {
+				char num[16];
+				snprintf(num, sizeof num, "%d", list_idx[depth]++);
+				if (join2(full, sizeof full, stack[depth], num, '.')
+				    && depth + 1 < 16) {
+					depth++;
+					memcpy(stack[depth], full, strlen(full) + 1);
+					ind[depth] = spaces;
+				}
+			}
+			if (*s == '\0')
+				continue;
+		}
+		i = 0;
+		while (s[i] && s[i] != ':' && i + 1 < (int)sizeof key)
+			key[i] = s[i], i++;
+		key[i] = 0;
+		while (i > 0 && isspace((unsigned char)key[i - 1]))
+			key[--i] = 0;
+		if (s[i] != ':')
+			continue;
+		s += i + 1;
+		while (*s == ' ')
+			s++;
+		if (*s == '"' || *s == '\'') {
+			char q = *s++;
+			i = 0;
+			while (*s && *s != q && i + 1 < (int)sizeof val)
+				val[i++] = *s++;
+			val[i] = 0;
+		} else {
+			i = 0;
+			while (*s && *s != '#' && *s != '\r' && i + 1 < (int)sizeof val)
+				val[i++] = *s++;
+			while (i > 0 && isspace((unsigned char)val[i - 1]))
+				i--;
+			val[i] = 0;
+		}
+		if (stack[depth][0]) {
+			if (!join2(full, sizeof full, stack[depth], key, '.'))
+				continue;
+		} else {
+			if (strlen(key) + 1 > sizeof full)
+				continue;
+			memcpy(full, key, strlen(key) + 1);
+		}
+		if (val[0] == 0) {
+			if (depth + 1 < 16) {
+				depth++;
+				snprintf(stack[depth], KEYLEN, "%s", full);
+				ind[depth] = spaces;
+				list_idx[depth] = 0;
+			}
+		} else {
+			kvset(full, val, 1);
+		}
+	}
+}
+
+static int
 color_index(const char *name)
 {
 	static const char *names[] = {
@@ -528,14 +721,14 @@ mods_of(const char *s)
 	for (tok = strtok_r(buf, "|+", &save); tok; tok = strtok_r(NULL, "|+", &save)) {
 		while (*tok == ' ')
 			tok++;
-		if (!strcasecmp(tok, "Control") || !strcasecmp(tok, "Ctrl"))
+		if (strcaseeq(tok, "Control") || strcaseeq(tok, "Ctrl"))
 			m |= ControlMask;
-		else if (!strcasecmp(tok, "Shift"))
+		else if (strcaseeq(tok, "Shift"))
 			m |= ShiftMask;
-		else if (!strcasecmp(tok, "Alt") || !strcasecmp(tok, "Option"))
+		else if (strcaseeq(tok, "Alt") || strcaseeq(tok, "Option"))
 			m |= Mod1Mask;
-		else if (!strcasecmp(tok, "Super") || !strcasecmp(tok, "Logo")
-		         || !strcasecmp(tok, "Command"))
+		else if (strcaseeq(tok, "Super") || strcaseeq(tok, "Logo")
+		         || strcaseeq(tok, "Command"))
 			m |= Mod4Mask;
 	}
 	return m;
@@ -754,8 +947,33 @@ fill_config(AlaConfig *cfg)
 	cfg->cursor_blink = -1;
 	cfg->cursor_thickness = -1;
 
+	cfg->columns = cfg->lines = -1;
+	cfg->pos_x = cfg->pos_y = INT_MIN;
+	cfg->startup_mode = -1;
+	cfg->dynamic_title = -1;
+
 	if ((s = kvget("window.opacity")))
 		cfg->opacity = (float)atof(s);
+	if ((s = kvget("window.dimensions.columns")) || (s = kvget("window.dimensions.cols")))
+		cfg->columns = atoi(s);
+	if ((s = kvget("window.dimensions.lines")) || (s = kvget("window.dimensions.rows")))
+		cfg->lines = atoi(s);
+	if ((s = kvget("window.position.x")))
+		cfg->pos_x = atoi(s);
+	if ((s = kvget("window.position.y")))
+		cfg->pos_y = atoi(s);
+	if ((s = kvget("window.startup_mode"))) {
+		if (strcaseeq(s, "Maximized"))
+			cfg->startup_mode = ALA_START_MAXIMIZED;
+		else if (strcaseeq(s, "Fullscreen"))
+			cfg->startup_mode = ALA_START_FULLSCREEN;
+		else
+			cfg->startup_mode = ALA_START_WINDOWED;
+	}
+	if ((s = kvget("window.title")))
+		cfg->title = dupstr(s);
+	if ((s = kvget("window.dynamic_title")))
+		cfg->dynamic_title = (strcaseeq(s, "true") || !strcmp(s, "1"));
 	if ((s = kvget("scrolling.history")))
 		cfg->history = atoi(s);
 	if ((s = kvget("scrolling.multiplier")))
@@ -765,23 +983,23 @@ fill_config(AlaConfig *cfg)
 	if ((s = kvget("window.padding.y")))
 		cfg->pad_y = atoi(s);
 	if ((s = kvget("window.dynamic_padding")))
-		cfg->dynamic_padding = (!strcmp(s, "true") || !strcmp(s, "1"));
+		cfg->dynamic_padding = (strcaseeq(s, "true") || !strcmp(s, "1"));
 	if ((s = kvget("window.decorations")))
-		cfg->decorations_none = !strcasecmp(s, "None");
+		cfg->decorations_none = strcaseeq(s, "None");
 	if ((s = kvget("selection.save_to_clipboard")))
-		cfg->save_to_clipboard = (!strcmp(s, "true") || !strcmp(s, "1"));
+		cfg->save_to_clipboard = (strcaseeq(s, "true") || !strcmp(s, "1"));
 	if ((s = kvget("selection.semantic_escape_chars")))
 		cfg->worddelims = dupstr(s);
 	if ((s = kvget("cursor.style.shape")) || (s = kvget("cursor.style"))) {
-		if (!strcasecmp(s, "Underline"))
+		if (strcaseeq(s, "Underline"))
 			cfg->cursor_shape = 4;
-		else if (!strcasecmp(s, "Beam"))
+		else if (strcaseeq(s, "Beam"))
 			cfg->cursor_shape = 6;
-		else if (!strcasecmp(s, "Block"))
+		else if (strcaseeq(s, "Block"))
 			cfg->cursor_shape = 2;
 	}
 	if ((s = kvget("cursor.style.blinking"))) {
-		if (!strcasecmp(s, "On") || !strcasecmp(s, "Always"))
+		if (strcaseeq(s, "On") || strcaseeq(s, "Always"))
 			cfg->cursor_blink = 1;
 		else
 			cfg->cursor_blink = 0;
@@ -848,18 +1066,30 @@ first_existing(char *out, size_t outlen)
 	const char *xdg = getenv("XDG_CONFIG_HOME");
 	const char *home = getenv("HOME");
 	char buf[4096];
-	const char *cands[6];
+	const char *cands[12];
 	int i, n = 0;
 
 	if (!home)
 		home = "";
 	if (xdg && xdg[0]) {
+		snprintf(buf, sizeof buf, "%s/c99term/c99term.toml", xdg);
+		cands[n++] = strdup(buf);
+		snprintf(buf, sizeof buf, "%s/c99term/c99term.yml", xdg);
+		cands[n++] = strdup(buf);
 		snprintf(buf, sizeof buf, "%s/alacritty/alacritty.toml", xdg);
+		cands[n++] = strdup(buf);
+		snprintf(buf, sizeof buf, "%s/alacritty/alacritty.yml", xdg);
 		cands[n++] = strdup(buf);
 		snprintf(buf, sizeof buf, "%s/alacritty.toml", xdg);
 		cands[n++] = strdup(buf);
 	}
+	snprintf(buf, sizeof buf, "%s/.config/c99term/c99term.toml", home);
+	cands[n++] = strdup(buf);
+	snprintf(buf, sizeof buf, "%s/.config/c99term/c99term.yml", home);
+	cands[n++] = strdup(buf);
 	snprintf(buf, sizeof buf, "%s/.config/alacritty/alacritty.toml", home);
+	cands[n++] = strdup(buf);
+	snprintf(buf, sizeof buf, "%s/.config/alacritty/alacritty.yml", home);
 	cands[n++] = strdup(buf);
 	snprintf(buf, sizeof buf, "%s/.alacritty.toml", home);
 	cands[n++] = strdup(buf);
@@ -873,6 +1103,131 @@ first_existing(char *out, size_t outlen)
 	return 0;
 }
 
+/* If ~/.config/c99term does not exist, create it and copy the first
+ * Alacritty config we can find. We copy, we do not delete the original. */
+static int
+ensure_c99term_dir(char *out, size_t outlen, char *migrated, size_t miglen)
+{
+	const char *xdg = getenv("XDG_CONFIG_HOME");
+	const char *home = getenv("HOME");
+	char dir[4096], dest[4112], src[4096];
+	struct stat st;
+	FILE *in, *o;
+	char buf[4096];
+	size_t n;
+
+	if (!home)
+		home = "";
+	if (xdg && xdg[0])
+		snprintf(dir, sizeof dir, "%s/c99term", xdg);
+	else
+		snprintf(dir, sizeof dir, "%s/.config/c99term", home);
+	if (!join2(dest, sizeof dest, dir, "c99term.toml", '/'))
+		return 0;
+	if (stat(dir, &st) == 0 && S_ISDIR(st.st_mode)) {
+		if (access(dest, R_OK) == 0) {
+			snprintf(out, outlen, "%s", dest);
+			return 1;
+		}
+		if (!join2(dest, sizeof dest, dir, "c99term.yml", '/'))
+			return 0;
+		if (access(dest, R_OK) == 0) {
+			snprintf(out, outlen, "%s", dest);
+			return 1;
+		}
+		return 0;
+	}
+	mkdir(dir, 0755);
+	/* parent .config may be missing */
+	if (stat(dir, &st) != 0) {
+		char parent[4096];
+		snprintf(parent, sizeof parent, "%s/.config", home);
+		mkdir(parent, 0755);
+		mkdir(dir, 0755);
+	}
+	if (!first_existing(src, sizeof src))
+		return 0;
+	/* first_existing now prefers c99term, which we just created empty.
+	 * Walk alacritty paths explicitly. */
+	src[0] = 0;
+	{
+		const char *try[] = {
+			NULL, NULL, NULL, NULL, NULL
+		};
+		char a[4096], b[4096], c[4096], d[4096];
+		int i;
+		if (xdg && xdg[0]) {
+			snprintf(a, sizeof a, "%s/alacritty/alacritty.toml", xdg);
+			snprintf(b, sizeof b, "%s/alacritty/alacritty.yml", xdg);
+		} else {
+			a[0] = b[0] = 0;
+		}
+		snprintf(c, sizeof c, "%s/.config/alacritty/alacritty.toml", home);
+		snprintf(d, sizeof d, "%s/.config/alacritty/alacritty.yml", home);
+		try[0] = a[0] ? a : NULL;
+		try[1] = b[0] ? b : NULL;
+		try[2] = c;
+		try[3] = d;
+		try[4] = "/etc/alacritty/alacritty.toml";
+		for (i = 0; i < 5; i++) {
+			if (try[i] && access(try[i], R_OK) == 0) {
+				snprintf(src, sizeof src, "%s", try[i]);
+				break;
+			}
+		}
+	}
+	if (!src[0])
+		return 0;
+	in = fopen(src, "r");
+	if (!in)
+		return 0;
+	if (!join2(dest, sizeof dest, dir, "c99term.toml", '/')) {
+		fclose(in);
+		return 0;
+	}
+	o = fopen(dest, "w");
+	if (!o) {
+		fclose(in);
+		return 0;
+	}
+	while ((n = fread(buf, 1, sizeof buf, in)) > 0)
+		fwrite(buf, 1, n, o);
+	fclose(in);
+	fclose(o);
+	snprintf(out, outlen, "%s", dest);
+	if (migrated)
+		snprintf(migrated, miglen, "%s", src);
+	return 1;
+}
+
+void
+alacritty_materialize(const AlaConfig *cfg, AlaApplied *out)
+{
+	memset(out, 0, sizeof *out);
+	out->opacity = cfg->opacity >= 0 ? cfg->opacity : 1.f;
+	out->history = cfg->history >= 0 ? cfg->history : 10000;
+	out->multiplier = cfg->multiplier > 0 ? cfg->multiplier : 3;
+	out->pad_x = cfg->pad_x >= 0 ? cfg->pad_x : 0;
+	out->pad_y = cfg->pad_y >= 0 ? cfg->pad_y : 0;
+	out->dynamic_padding = cfg->dynamic_padding > 0;
+	out->decorations_none = cfg->decorations_none > 0;
+	out->save_to_clipboard = cfg->save_to_clipboard > 0;
+	out->columns = cfg->columns;
+	out->lines = cfg->lines;
+	out->pos_x = cfg->pos_x;
+	out->pos_y = cfg->pos_y;
+	out->startup_mode = cfg->startup_mode;
+	out->dynamic_title = cfg->dynamic_title > 0;
+	if (cfg->title)
+		snprintf(out->title, sizeof out->title, "%s", cfg->title);
+	if (cfg->font)
+		snprintf(out->font, sizeof out->font, "%s", cfg->font);
+	if (cfg->fg)
+		snprintf(out->fg, sizeof out->fg, "%s", cfg->fg);
+	if (cfg->bg)
+		snprintf(out->bg, sizeof out->bg, "%s", cfg->bg);
+}
+
 void
 alacritty_load(AlaConfig *cfg, const char *config_file,
                char **overrides, int noverrides)
@@ -883,14 +1238,16 @@ alacritty_load(AlaConfig *cfg, const char *config_file,
 	nkv = 0;
 	memset(kvs, 0, sizeof kvs);
 	path[0] = 0;
+	cfg->migrated_from[0] = 0;
 	if (config_file && config_file[0]) {
 		expand_home(config_file, path, sizeof path);
-	} else if (!first_existing(path, sizeof path)) {
+	} else if (!ensure_c99term_dir(path, sizeof path,
+	                               cfg->migrated_from, sizeof cfg->migrated_from)
+	           && !first_existing(path, sizeof path)) {
 		path[0] = 0;
 	}
-	if (path[0]) {
+	if (path[0] && load_file(path, 0)) {
 		snprintf(cfg->path, sizeof cfg->path, "%s", path);
-		load_file(path, 0);
 		cfg->loaded = 1;
 	}
 	for (i = 0; i < noverrides; i++) {
@@ -915,6 +1272,7 @@ alacritty_free(AlaConfig *cfg)
 	free(cfg->workdir);
 	free(cfg->term);
 	free(cfg->worddelims);
+	free(cfg->title);
 	for (i = 0; i < 8; i++) {
 		free(cfg->normal[i]);
 		free(cfg->bright[i]);

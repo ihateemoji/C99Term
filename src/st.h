@@ -102,12 +102,15 @@ void selclear(void);
 void kscrollup(const Arg *);
 void kscrolldown(const Arg *);
 void tclearhist(void);
+void tscrollsnap(void);
+int tisaltscreen(void);
 extern int histsize;
 extern int scrollmult;
 extern char *initial_workdir;
 void selinit(void);
 void selstart(int, int, int);
 void selextend(int, int, int, int);
+int seldragging(void);
 int selected(int, int);
 char *getsel(void);
 

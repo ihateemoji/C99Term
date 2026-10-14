@@ -61,7 +61,7 @@ static void selpaste(const Arg *);
 static void zoom(const Arg *);
 static void zoomabs(const Arg *);
 static void zoomreset(const Arg *);
-static void ttysend(const Arg *);
+void ttysend(const Arg *);
 static void newwindow(const Arg *);
 static int ala_handle(unsigned int mods, KeySym ks, unsigned int button);
 
@@ -208,11 +208,7 @@ static void (*handler[LASTEvent])(XEvent *) = {
 	[MotionNotify] = bmotion,
 	[ButtonPress] = bpress,
 	[ButtonRelease] = brelease,
-/*
- * Uncomment if you want the selection to disappear when you select something
- * different in another window.
- */
-/*	[SelectionClear] = selclear_, */
+	[SelectionClear] = selclear_,
 	[SelectionNotify] = selnotify,
 /*
  * PropertyNotify is only turned on when there is some INCR transfer happening
@@ -272,6 +268,9 @@ int scrollmult = 3;
 int savetoclipboard = 0;
 int dynamicpadding = 0;
 int decorations_none = 0;
+int pad_x = 0;
+int pad_y = 0;
+int startup_mode = 0;
 char *initial_workdir = NULL;
 
 void
@@ -346,6 +345,45 @@ void
 ttysend(const Arg *arg)
 {
 	ttywrite(arg->s, strlen(arg->s), 1);
+}
+
+/* Alacritty scrolls the view while a selection is dragged to the edge,
+ * and the highlight follows. Returns 1 if a scroll happened. */
+static int
+sel_autoscroll(int x, int y)
+{
+	int rows, col, n;
+	Arg a;
+
+	if (!seldragging() || !(buttons & (1 << (Button1 - 1))))
+		return 0;
+	if (win.ch <= 0 || win.cw <= 0)
+		return 0;
+	rows = win.th / win.ch;
+	if (rows < 1)
+		return 0;
+	col = (x - borderpx) / win.cw;
+	LIMIT(col, 0, (win.tw / win.cw) - 1);
+
+	if (y < borderpx + win.ch) {
+		n = 1 + (borderpx + win.ch - y) / win.ch;
+		if (n > 8)
+			n = 8;
+		a.i = n;
+		kscrollup(&a);
+		selextend(col, 0, SEL_REGULAR, 0);
+		return 1;
+	}
+	if (y >= win.h - borderpx - win.ch) {
+		n = 1 + (y - (win.h - borderpx - win.ch)) / win.ch;
+		if (n > 8)
+			n = 8;
+		a.i = n;
+		kscrolldown(&a);
+		selextend(col, rows - 1, SEL_REGULAR, 0);
+		return 1;
+	}
+	return 0;
 }
 
 int
@@ -503,6 +541,14 @@ bpress(XEvent *e)
 		return;
 	}
 
+	/* Alt screen (vim, less): wheel moves the app cursor, as in Alacritty.
+	 * Shift still forces local scrollback. */
+	if ((btn == Button4 || btn == Button5) && tisaltscreen()
+	    && !(e->xbutton.state & ShiftMask)) {
+		mousereport(e);
+		return;
+	}
+
 	if (ala_handle(e->xbutton.state, NoSymbol, btn))
 		return;
 
@@ -536,6 +582,10 @@ bpress(XEvent *e)
 		xsel.tclick1 = now;
 
 		selstart(evcol(e), evrow(e), snap);
+		/* Grab so a drag past the window edge still delivers motion. */
+		XGrabPointer(xw.dpy, xw.win, False,
+		             ButtonReleaseMask | PointerMotionMask,
+		             GrabModeAsync, GrabModeAsync, None, None, CurrentTime);
 	}
 }
 
@@ -745,8 +795,10 @@ brelease(XEvent *e)
 
 	if (mouseaction(e, 1))
 		return;
-	if (btn == Button1)
+	if (btn == Button1) {
+		XUngrabPointer(xw.dpy, CurrentTime);
 		mousesel(e, 1);
+	}
 }
 
 void
@@ -756,6 +808,11 @@ bmotion(XEvent *e)
 		mousereport(e);
 		return;
 	}
+
+	/* Dragging to the top or bottom edge scrolls and extends the
+	 * highlight, the same way Alacritty does. */
+	if (seldragging() && (e->xbutton.state & Button1Mask))
+		sel_autoscroll(e->xbutton.x, e->xbutton.y);
 
 	mousesel(e, 0);
 }
@@ -778,6 +835,9 @@ cresize(int width, int height)
 	tresize(col, row);
 	xresize(col, row);
 	ttyresize(win.tw, win.th);
+	/* New pixmap is empty. Force a full redraw so resize leaves no
+	 * black strips where the old dirty map does not cover. */
+	redraw();
 }
 
 void
@@ -896,9 +956,16 @@ xsetcolorname(int x, const char *name)
 void
 xclear(int x1, int y1, int x2, int y2)
 {
-	XftDrawRect(xw.draw,
-			&dc.col[IS_SET(MODE_REVERSE)? defaultfg : defaultbg],
-			x1, y1, x2-x1, y2-y1);
+	Color *bg = &dc.col[IS_SET(MODE_REVERSE) ? defaultfg : defaultbg];
+
+	if (xw.depth == 32 && xw.draw) {
+		XRenderColor rc = bg->color;
+		Picture pic = XftDrawPicture(xw.draw);
+		XRenderFillRectangle(xw.dpy, PictOpSrc, pic, &rc,
+		                     x1, y1, x2 - x1, y2 - y1);
+		return;
+	}
+	XftDrawRect(xw.draw, bg, x1, y1, x2 - x1, y2 - y1);
 }
 
 void
@@ -1299,6 +1366,18 @@ xinit(int cols, int rows)
 		Atom a = XInternAtom(xw.dpy, "_MOTIF_WM_HINTS", False);
 		XChangeProperty(xw.dpy, xw.win, a, a, 32, PropModeReplace,
 		                (unsigned char *)&mwm, 5);
+	}
+	if (startup_mode == 1 || startup_mode == 2) {
+		Atom netwmstate = XInternAtom(xw.dpy, "_NET_WM_STATE", False);
+		Atom state = XInternAtom(xw.dpy,
+			startup_mode == 2 ? "_NET_WM_STATE_FULLSCREEN"
+			                  : "_NET_WM_STATE_MAXIMIZED_VERT", False);
+		Atom state2 = XInternAtom(xw.dpy, "_NET_WM_STATE_MAXIMIZED_HORZ", False);
+		XChangeProperty(xw.dpy, xw.win, netwmstate, XA_ATOM, 32,
+		                PropModeReplace, (unsigned char *)&state, 1);
+		if (startup_mode == 1)
+			XChangeProperty(xw.dpy, xw.win, netwmstate, XA_ATOM, 32,
+			                PropModeAppend, (unsigned char *)&state2, 1);
 	}
 	XMapWindow(xw.dpy, xw.win);
 	XSync(xw.dpy, False);
@@ -2093,6 +2172,19 @@ run(void)
 		draw();
 		XFlush(xw.dpy);
 		drawing = 0;
+
+		/* Keep scrolling while a selection is held at the window edge. */
+		if (seldragging() && (buttons & (1 << (Button1 - 1)))) {
+			Window rr, cr;
+			int rx, ry, x, y;
+			unsigned int m;
+
+			if (XQueryPointer(xw.dpy, xw.win, &rr, &cr, &rx, &ry, &x, &y, &m)
+			    && sel_autoscroll(x, y)) {
+				redraw();
+				timeout = 16;
+			}
+		}
 	}
 }
 
@@ -2219,27 +2311,46 @@ ala_apply(void)
 {
 	int i;
 
+	AlaApplied applied;
+
 	memset(&alacfg, 0, sizeof alacfg);
 	alacritty_load(&alacfg, opt_config, opt_overrides, noverrides);
 	if (!alacfg.loaded && !noverrides)
 		return;
+	alacritty_materialize(&alacfg, &applied);
 	if (alacfg.font && !opt_font)
 		font = alacfg.font;
 	if (alacfg.opacity >= 0)
-		winopacity = alacfg.opacity;
+		winopacity = applied.opacity;
 	if (alacfg.history >= 0)
-		histsize = alacfg.history;
+		histsize = applied.history;
 	if (alacfg.multiplier > 0)
-		scrollmult = alacfg.multiplier;
+		scrollmult = applied.multiplier;
 	if (alacfg.pad_x >= 0 || alacfg.pad_y >= 0) {
-		int px = alacfg.pad_x >= 0 ? alacfg.pad_x : 0;
-		int py = alacfg.pad_y >= 0 ? alacfg.pad_y : 0;
-		borderpx = px > py ? px : py;
+		pad_x = applied.pad_x;
+		pad_y = applied.pad_y;
+		borderpx = pad_x > pad_y ? pad_x : pad_y;
 	}
 	if (alacfg.dynamic_padding >= 0)
-		dynamicpadding = alacfg.dynamic_padding;
+		dynamicpadding = applied.dynamic_padding;
 	if (alacfg.decorations_none >= 0)
-		decorations_none = alacfg.decorations_none;
+		decorations_none = applied.decorations_none;
+	if (alacfg.columns > 0)
+		cols = (unsigned)alacfg.columns;
+	if (alacfg.lines > 0)
+		rows = (unsigned)alacfg.lines;
+	if (alacfg.pos_x != INT_MIN) {
+		xw.l = alacfg.pos_x;
+		xw.gm |= XValue;
+	}
+	if (alacfg.pos_y != INT_MIN) {
+		xw.t = alacfg.pos_y;
+		xw.gm |= YValue;
+	}
+	if (alacfg.startup_mode >= 0)
+		startup_mode = alacfg.startup_mode;
+	if (alacfg.title && !opt_title)
+		opt_title = alacfg.title;
 	if (alacfg.save_to_clipboard >= 0)
 		savetoclipboard = alacfg.save_to_clipboard;
 	if (alacfg.cursor_shape)
@@ -2285,7 +2396,10 @@ ala_apply(void)
 		worddelimiters = wbuf;
 	}
 	if (alacfg.path[0])
-		fprintf(stderr, "st: using alacritty config %s\n", alacfg.path);
+		fprintf(stderr, "c99term: config %s\n", alacfg.path);
+	if (alacfg.migrated_from[0])
+		fprintf(stderr, "c99term: copied %s into the c99term config dir\n",
+		        alacfg.migrated_from);
 }
 
 static void
@@ -2390,7 +2504,7 @@ run:
 		opt_cmd = argv;
 
 	if (!opt_title)
-		opt_title = (opt_line || !opt_cmd) ? "st" : opt_cmd[0];
+		opt_title = (opt_line || !opt_cmd) ? "c99term" : opt_cmd[0];
 
 	setlocale(LC_CTYPE, "");
 	XSetLocaleModifiers("");

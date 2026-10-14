@@ -1,0 +1,41 @@
+window:
+  opacity: 0.9
+  decorations: none
+  dynamic_padding: true
+  dimensions:
+    columns: 100
+    lines: 30
+  position:
+    x: 40
+    y: 40
+  padding:
+    x: 8
+    y: 4
+  startup_mode: Windowed
+  title: C99Term
+
+scrolling:
+  history: 20000
+  multiplier: 5
+
+font:
+  size: 13.0
+  normal:
+    family: monospace
+    style: Regular
+
+colors:
+  primary:
+    background: '#1d2021'
+    foreground: '#d5c4a1'
+  normal:
+    black: '#282828'
+    red: '#cc241d'
+
+cursor:
+  style:
+    shape: Beam
+    blinking: Off
+
+selection:
+  save_to_clipboard: true

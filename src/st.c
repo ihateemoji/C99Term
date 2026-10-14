@@ -128,6 +128,10 @@ typedef struct {
 	int icharset; /* selected charset for sequence */
 	int *tabs;
 	Rune lastc;   /* last printed char outside of sequence, 0 if control */
+	Line *hist;   /* scrollback ring; NULL slots are unused */
+	int histi;    /* next history write index */
+	int histn;    /* number of valid history lines */
+	int scr;      /* view offset, 0 = pinned to bottom */
 } Term;
 
 /* CSI Escape sequence structs */
@@ -179,6 +183,8 @@ static void tdeleteline(int);
 static void tinsertblank(int);
 static void tinsertblankline(int);
 static int tlinelen(int);
+static Line tline(int);
+static void histappend(Line);
 static void tmoveto(int, int);
 static void tmoveato(int, int);
 static void tnewline(int);
@@ -404,15 +410,56 @@ selinit(void)
 	sel.ob.x = -1;
 }
 
+/* Visible row y. y may be outside [0, term.row) so a selection dragged
+ * past the edge can cover scrollback that is no longer on screen. */
+static Line
+tline(int y)
+{
+	int idx, ly;
+
+	if (y >= term.scr || !term.hist || term.histn <= 0) {
+		ly = y - (y >= term.scr ? term.scr : 0);
+		if (ly < 0)
+			ly = 0;
+		if (ly >= term.row)
+			ly = term.row - 1;
+		return term.line[ly];
+	}
+	idx = term.histi + (y - term.scr);
+	idx %= histsize;
+	if (idx < 0)
+		idx += histsize;
+	if (!term.hist[idx])
+		return term.line[0];
+	return term.hist[idx];
+}
+
+static void
+histappend(Line line)
+{
+	if (histsize <= 0 || !term.hist || IS_SET(MODE_ALTSCREEN))
+		return;
+	if (!term.hist[term.histi])
+		term.hist[term.histi] = xmalloc(term.col * sizeof(Glyph));
+	else
+		term.hist[term.histi] = xrealloc(term.hist[term.histi],
+		                                 term.col * sizeof(Glyph));
+	memcpy(term.hist[term.histi], line, term.col * sizeof(Glyph));
+	term.histi = (term.histi + 1) % histsize;
+	if (term.histn < histsize)
+		term.histn++;
+}
+
 int
 tlinelen(int y)
 {
 	int i = term.col;
+	Line line = tline(y);
 
-	if (term.line[y][i - 1].mode & ATTR_WRAP)
+	if (line[i - 1].mode & ATTR_WRAP)
 		return i;
 
-	while (i > 0 && term.line[y][i - 1].u == ' ')
+	while (i > 0 && line[i - 1].u == ' ')
 		--i;
 
 	return i;
@@ -521,7 +568,7 @@ selsnap(int *x, int *y, int direction)
 		 * Snap around if the word wraps around at the end or
 		 * beginning of a line.
 		 */
-		prevgp = &term.line[*y][*x];
+		prevgp = &tline(*y)[*x];
 		prevdelim = ISDELIM(prevgp->u);
 		for (;;) {
 			newx = *x + direction;
@@ -536,14 +583,14 @@ selsnap(int *x, int *y, int direction)
 					yt = *y, xt = *x;
 				else
 					yt = newy, xt = newx;
-				if (!(term.line[yt][xt].mode & ATTR_WRAP))
+				if (!(tline(yt)[xt].mode & ATTR_WRAP))
 					break;
 			}
 
 			if (newx >= tlinelen(newy))
 				break;
 
-			gp = &term.line[newy][newx];
+			gp = &tline(newy)[newx];
 			delim = ISDELIM(gp->u);
 			if (!(gp->mode & ATTR_WDUMMY) && (delim != prevdelim
 					|| (delim && gp->u != prevgp->u)))
@@ -564,14 +611,14 @@ selsnap(int *x, int *y, int direction)
 		*x = (direction < 0) ? 0 : term.col - 1;
 		if (direction < 0) {
 			for (; *y > 0; *y += direction) {
-				if (!(term.line[*y-1][term.col-1].mode
+				if (!(tline(*y-1)[term.col-1].mode
 						& ATTR_WRAP)) {
 					break;
 				}
 			}
 		} else if (direction > 0) {
 			for (; *y < term.row-1; *y += direction) {
-				if (!(term.line[*y][term.col-1].mode
+				if (!(tline(*y)[term.col-1].mode
 						& ATTR_WRAP)) {
 					break;
 				}
@@ -602,13 +649,13 @@ getsel(void)
 		}
 
 		if (sel.type == SEL_RECTANGULAR) {
-			gp = &term.line[y][sel.nb.x];
+			gp = &tline(y)[sel.nb.x];
 			lastx = sel.ne.x;
 		} else {
-			gp = &term.line[y][sel.nb.y == y ? sel.nb.x : 0];
+			gp = &tline(y)[sel.nb.y == y ? sel.nb.x : 0];
 			lastx = (sel.ne.y == y) ? sel.ne.x : term.col-1;
 		}
-		last = &term.line[y][MIN(lastx, linelen-1)];
+		last = &tline(y)[MIN(lastx, linelen-1)];
 		while (last >= gp && last->u == ' ')
 			--last;
 
@@ -692,6 +739,18 @@ execsh(char *cmd, char **args)
 	unsetenv("COLUMNS");
 	unsetenv("LINES");
 	unsetenv("TERMCAP");
+	if (initial_workdir && initial_workdir[0]) {
+		char wbuf[4096];
+		const char *w = initial_workdir;
+
+		if (w[0] == '~') {
+			const char *home = getenv("HOME");
+			snprintf(wbuf, sizeof wbuf, "%s%s", home ? home : "", w + 1);
+			w = wbuf;
+		}
+		if (chdir(w) < 0)
+			fprintf(stderr, "chdir %s: %s\n", w, strerror(errno));
+	}
 	setenv("LOGNAME", pw->pw_name, 1);
 	setenv("USER", pw->pw_name, 1);
 	setenv("SHELL", sh, 1);
@@ -844,6 +903,9 @@ void
 ttywrite(const char *s, size_t n, int may_echo)
 {
 	const char *next;
+
+	/* Typing or pasting returns the view to the bottom, like Alacritty. */
+	tscrollsnap();
 
 	if (may_echo && IS_SET(MODE_ECHO))
 		twrite(s, n, 1);
@@ -1040,7 +1102,111 @@ tnew(int col, int row)
 {
 	term = (Term){ .c = { .attr = { .fg = defaultfg, .bg = defaultbg } } };
 	tresize(col, row);
+	if (histsize > 0) {
+		term.hist = xmalloc(histsize * sizeof(Line));
+		memset(term.hist, 0, histsize * sizeof(Line));
+	}
 	treset();
+}
+
+void
+kscrollup(const Arg *a)
+{
+	int n;
+
+	if (IS_SET(MODE_ALTSCREEN) || histsize <= 0 || term.histn <= 0)
+		return;
+	if (a->i == -1)
+		n = MAX(term.row - 1, 1);
+	else if (a->i == -2)
+		n = term.histn;
+	else if (a->i == -3)
+		n = MAX(term.row / 2, 1);
+	else if (a->i > 0)
+		n = a->i;
+	else
+		n = scrollmult > 0 ? scrollmult : 3;
+	if (term.scr + n > term.histn)
+		n = term.histn - term.scr;
+	if (n <= 0)
+		return;
+	term.scr += n;
+	/* Selection stays on the same content, so it moves down the view. */
+	if (sel.ob.x != -1) {
+		sel.ob.y += n;
+		sel.oe.y += n;
+		selnormalize();
+	}
+	tfulldirt();
+}
+
+void
+kscrolldown(const Arg *a)
+{
+	int n;
+
+	if (a->i == -1)
+		n = MAX(term.row - 1, 1);
+	else if (a->i == -2)
+		n = term.scr;
+	else if (a->i == -3)
+		n = MAX(term.row / 2, 1);
+	else if (a->i > 0)
+		n = a->i;
+	else
+		n = scrollmult > 0 ? scrollmult : 3;
+	if (n > term.scr)
+		n = term.scr;
+	if (n <= 0)
+		return;
+	term.scr -= n;
+	if (sel.ob.x != -1) {
+		sel.ob.y -= n;
+		sel.oe.y -= n;
+		selnormalize();
+	}
+	tfulldirt();
+}
+
+void
+tscrollsnap(void)
+{
+	if (!term.scr)
+		return;
+	term.scr = 0;
+	/* Jump immediately. Waiting for the shell echo is what made typing
+	 * look like it did not return to the bottom. */
+	redraw();
+}
+
+int
+seldragging(void)
+{
+	return sel.ob.x != -1 && sel.mode != SEL_IDLE;
+}
+
+int
+tisaltscreen(void)
+{
+	return IS_SET(MODE_ALTSCREEN);
+}
+
+void
+tclearhist(void)
+{
+	int i;
+
+	if (!term.hist)
+		return;
+	for (i = 0; i < histsize; i++) {
+		free(term.hist[i]);
+		term.hist[i] = NULL;
+	}
+	term.histi = 0;
+	term.histn = 0;
+	term.scr = 0;
+	selclear();
+	tfulldirt();
 }
 
 void
@@ -1082,8 +1248,18 @@ tscrollup(int orig, int n)
 
 	LIMIT(n, 0, term.bot-orig+1);
 
+	/* Primary-screen lines leaving the top become scrollback. */
+	if (orig == 0 && !IS_SET(MODE_ALTSCREEN)) {
+		for (i = 0; i < n; i++)
+			histappend(term.line[i]);
+		if (term.scr)
+			term.scr = MIN(term.scr + n, term.histn);
+	}
+
 	tclearregion(0, orig, term.col-1, orig+n-1);
 	tsetdirt(orig+n, term.bot);
+	if (term.scr)
+		tfulldirt();
 
 	for (i = orig; i <= term.bot-n; i++) {
 		temp = term.line[i];
@@ -2586,6 +2762,7 @@ tresize(int col, int row)
 	 * memmove because we're freeing the earlier lines
 	 */
 	for (i = 0; i <= term.c.y - row; i++) {
+		histappend(term.line[i]);
 		free(term.line[i]);
 		free(term.alt[i]);
 	}
@@ -2625,6 +2802,17 @@ tresize(int col, int row)
 		for (bp += tabspaces; bp < term.tabs + col; bp += tabspaces)
 			*bp = 1;
 	}
+	if (term.hist) {
+		for (i = 0; i < histsize; i++) {
+			if (!term.hist[i])
+				continue;
+			term.hist[i] = xrealloc(term.hist[i], col * sizeof(Glyph));
+			if (col > mincol)
+				memset(term.hist[i] + mincol, 0,
+				       (col - mincol) * sizeof(Glyph));
+		}
+	}
+
 	/* update terminal size */
 	term.col = col;
 	term.row = row;
@@ -2659,11 +2847,13 @@ drawregion(int x1, int y1, int x2, int y2)
 	int y;
 
 	for (y = y1; y < y2; y++) {
-		if (!term.dirty[y])
+		/* Dirty flags are indexed by live-screen rows. When the view is
+		 * scrolled they do not match the line on screen, so redraw all. */
+		if (!term.dirty[y] && term.scr == 0)
 			continue;
 
 		term.dirty[y] = 0;
-		xdrawline(term.line[y], x1, y, x2);
+		xdrawline(tline(y), x1, y, x2);
 	}
 }
 
@@ -2684,8 +2874,15 @@ draw(void)
 		cx--;
 
 	drawregion(0, 0, term.col, term.row);
-	xdrawcursor(cx, term.c.y, term.line[term.c.y][cx],
-			term.ocx, term.ocy, term.line[term.ocy][term.ocx]);
+	if (term.scr == 0) {
+		xdrawcursor(cx, term.c.y, term.line[term.c.y][cx],
+				term.ocx, term.ocy, term.line[term.ocy][term.ocx]);
+	} else {
+		int cy = term.c.y + term.scr;
+		if (cy < term.row)
+			xdrawcursor(cx, cy, tline(cy)[cx],
+					term.ocx, term.ocy, tline(term.ocy)[term.ocx]);
+	}
 	term.ocx = cx;
 	term.ocy = term.c.y;
 	xfinishdraw();
