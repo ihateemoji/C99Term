@@ -203,6 +203,26 @@ test_maximized(void)
 	alacritty_free(&cfg);
 }
 
+static void
+test_ox_colors(void)
+{
+	AlaConfig cfg;
+
+	write_file("/tmp/c99term-ox.yml",
+	           "colors:\n"
+	           "  primary:\n"
+	           "    background: '0x1d1f21'\n"
+	           "    foreground: '0xc5c8c6ff'\n"
+	           "  normal:\n"
+	           "    red: '0xcc6666'\n");
+	memset(&cfg, 0, sizeof cfg);
+	alacritty_load(&cfg, "/tmp/c99term-ox.yml", NULL, 0);
+	check("0x bg rewritten to hash", cfg.bg && !strcmp(cfg.bg, "#1d1f21"));
+	check("0x fg drops alpha", cfg.fg && !strcmp(cfg.fg, "#c5c8c6"));
+	check("0x normal red rewritten", cfg.normal[1] && !strcmp(cfg.normal[1], "#cc6666"));
+	alacritty_free(&cfg);
+}
+
 int
 main(void)
 {
@@ -212,6 +232,7 @@ main(void)
 	test_bindings_and_import();
 	test_missing_and_comments();
 	test_maximized();
+	test_ox_colors();
 	printf("\n%d passed, %d failed\n", passed, failed);
 	return failed ? 1 : 0;
 }

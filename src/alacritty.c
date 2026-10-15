@@ -866,6 +866,30 @@ dupstr(const char *s)
 	return s ? strdup(s) : NULL;
 }
 
+/* Alacritty accepts 0xrrggbb and 0xrrggbbaa. XftColorAllocName only
+ * accepts #rrggbb (or a named colour), so rewrite the 0x form. */
+static char *
+dupcolor(const char *s)
+{
+	char buf[16];
+	const char *hex;
+	size_t n;
+
+	if (!s)
+		return NULL;
+	if (s[0] != '0' || (s[1] != 'x' && s[1] != 'X'))
+		return strdup(s);
+	hex = s + 2;
+	n = strlen(hex);
+	/* Keep rrggbb; drop a trailing alpha byte if present. */
+	if (n != 6 && n != 8)
+		return strdup(s);
+	buf[0] = '#';
+	memcpy(buf + 1, hex, 6);
+	buf[7] = 0;
+	return strdup(buf);
+}
+
 static void
 apply_bindings(AlaConfig *cfg)
 {
@@ -1021,10 +1045,10 @@ fill_config(AlaConfig *cfg)
 			         "%s:style=%s:antialias=true", family, style);
 		cfg->font = dupstr(font);
 	}
-	cfg->fg = dupstr(kvget("colors.primary.foreground"));
-	cfg->bg = dupstr(kvget("colors.primary.background"));
-	cfg->cursor_color = dupstr(kvget("colors.cursor.cursor"));
-	cfg->cursor_text = dupstr(kvget("colors.cursor.text"));
+	cfg->fg = dupcolor(kvget("colors.primary.foreground"));
+	cfg->bg = dupcolor(kvget("colors.primary.background"));
+	cfg->cursor_color = dupcolor(kvget("colors.cursor.cursor"));
+	cfg->cursor_text = dupcolor(kvget("colors.cursor.text"));
 	for (i = 0; i < 8; i++) {
 		char k[64];
 		static const char *names[] = {
@@ -1032,9 +1056,9 @@ fill_config(AlaConfig *cfg)
 			"blue", "magenta", "cyan", "white"
 		};
 		snprintf(k, sizeof k, "colors.normal.%s", names[i]);
-		cfg->normal[i] = dupstr(kvget(k));
+		cfg->normal[i] = dupcolor(kvget(k));
 		snprintf(k, sizeof k, "colors.bright.%s", names[i]);
-		cfg->bright[i] = dupstr(kvget(k));
+		cfg->bright[i] = dupcolor(kvget(k));
 		(void)color_index;
 	}
 	if ((s = kvget("terminal.shell")))
