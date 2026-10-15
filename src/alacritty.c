@@ -1181,9 +1181,16 @@ ensure_c99term_dir(char *out, size_t outlen, char *migrated, size_t miglen)
 	in = fopen(src, "r");
 	if (!in)
 		return 0;
-	if (!join2(dest, sizeof dest, dir, "c99term.toml", '/')) {
-		fclose(in);
-		return 0;
+	{
+		const char *base = "c99term.toml";
+		size_t sl = strlen(src);
+		if ((sl >= 5 && !strcmp(src + sl - 5, ".yaml"))
+		    || (sl >= 4 && !strcmp(src + sl - 4, ".yml")))
+			base = "c99term.yml";
+		if (!join2(dest, sizeof dest, dir, base, '/')) {
+			fclose(in);
+			return 0;
+		}
 	}
 	o = fopen(dest, "w");
 	if (!o) {
