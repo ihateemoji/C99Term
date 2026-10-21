@@ -223,6 +223,46 @@ test_ox_colors(void)
 	alacritty_free(&cfg);
 }
 
+static void
+test_clamping_and_security(void)
+{
+	AlaConfig cfg;
+	AlaApplied a;
+	char *ov_huge[] = { "scrolling.history=999999999999",
+	                    "window.dimensions.columns=100000",
+	                    "window.dimensions.lines=-5",
+	                    "scrolling.multiplier=1000",
+	                    "window.padding.x=-10" };
+	char *ov_env[] = { "env.PATH=/evil", "env.LD_PRELOAD=bad.so",
+	                   "env.SAFE_VAR=ok", "env.TERM=xterm-256color" };
+
+	/* Clear any previous env pollution for the test */
+	unsetenv("PATH");
+	unsetenv("LD_PRELOAD");
+	unsetenv("SAFE_VAR");
+	unsetenv("TERM");
+
+	memset(&cfg, 0, sizeof cfg);
+	alacritty_load(&cfg, NULL, ov_huge, 5);
+	alacritty_materialize(&cfg, &a);
+	check("huge history clamped", cfg.history == 1000000 && a.history == 1000000);
+	check("huge columns clamped", cfg.columns == 10000 && a.columns == 10000);
+	check("negative lines ignored", cfg.lines == -1);
+	check("huge multiplier clamped", cfg.multiplier == 100);
+	check("negative pad ignored or clamped", cfg.pad_x == 0);
+	alacritty_free(&cfg);
+
+	memset(&cfg, 0, sizeof cfg);
+	alacritty_load(&cfg, NULL, ov_env, 4);
+	check("dangerous PATH not set", getenv("PATH") == NULL);
+	check("dangerous LD_PRELOAD not set", getenv("LD_PRELOAD") == NULL);
+	check("safe env var set", getenv("SAFE_VAR") && !strcmp(getenv("SAFE_VAR"), "ok"));
+	check("TERM allowed", getenv("TERM") && !strcmp(getenv("TERM"), "xterm-256color"));
+
+	alacritty_free(&cfg);
+}
+
+
 int
 main(void)
 {
@@ -233,6 +273,8 @@ main(void)
 	test_missing_and_comments();
 	test_maximized();
 	test_ox_colors();
+	test_clamping_and_security();
 	printf("\n%d passed, %d failed\n", passed, failed);
 	return failed ? 1 : 0;
 }
+

@@ -950,6 +950,50 @@ apply_bindings(AlaConfig *cfg)
 	}
 }
 
+/* Safe integer parse: returns 1 on success, clamps to [minv, maxv]. */
+static int
+safe_atoi(const char *s, int *out, int minv, int maxv)
+{
+	char *end;
+	long v;
+
+	if (!s || !s[0])
+		return 0;
+	errno = 0;
+	v = strtol(s, &end, 10);
+	if (end == s || *end != '\0' || errno == ERANGE)
+		return 0;
+	if (v < minv)
+		v = minv;
+	if (v > maxv)
+		v = maxv;
+	*out = (int)v;
+	return 1;
+}
+
+static int
+is_dangerous_env(const char *name)
+{
+	/* Block variables that can alter dynamic linker or executable search.
+	 * A terminal config must not be able to plant LD_PRELOAD or rewrite PATH. */
+	static const char *blocked[] = {
+		"PATH", "LD_PRELOAD", "LD_LIBRARY_PATH", "LD_AUDIT",
+		"DYLD_INSERT_LIBRARIES", "DYLD_LIBRARY_PATH",
+		"DYLD_FRAMEWORK_PATH", "DYLD_FALLBACK_LIBRARY_PATH",
+		NULL
+	};
+	int i;
+	if (!name)
+		return 1;
+	for (i = 0; blocked[i]; i++)
+		if (!strcmp(name, blocked[i]))
+			return 1;
+	/* Also block any LD_* or DYLD_* prefix */
+	if (!strncmp(name, "LD_", 3) || !strncmp(name, "DYLD_", 5))
+		return 1;
+	return 0;
+}
+
 static void
 fill_config(AlaConfig *cfg)
 {
@@ -958,7 +1002,7 @@ fill_config(AlaConfig *cfg)
 	const char *family = "monospace";
 	const char *style = "Regular";
 	const char *size = NULL;
-	int i;
+	int i, tmp;
 
 	cfg->opacity = -1;
 	cfg->history = -1;
@@ -976,16 +1020,31 @@ fill_config(AlaConfig *cfg)
 	cfg->startup_mode = -1;
 	cfg->dynamic_title = -1;
 
-	if ((s = kvget("window.opacity")))
-		cfg->opacity = (float)atof(s);
-	if ((s = kvget("window.dimensions.columns")) || (s = kvget("window.dimensions.cols")))
-		cfg->columns = atoi(s);
-	if ((s = kvget("window.dimensions.lines")) || (s = kvget("window.dimensions.rows")))
-		cfg->lines = atoi(s);
+	if ((s = kvget("window.opacity"))) {
+		float o = (float)atof(s);
+		if (o >= 0.f && o <= 1.f)
+			cfg->opacity = o;
+		else if (o > 1.f)
+			cfg->opacity = 1.f;
+		else
+			cfg->opacity = 0.f;
+	}
+	if ((s = kvget("window.dimensions.columns")) || (s = kvget("window.dimensions.cols"))) {
+		long raw = strtol(s, NULL, 10);
+		if (raw >= 1 && safe_atoi(s, &tmp, 1, 10000))
+			cfg->columns = tmp;
+	}
+	if ((s = kvget("window.dimensions.lines")) || (s = kvget("window.dimensions.rows"))) {
+		long raw = strtol(s, NULL, 10);
+		if (raw >= 1 && safe_atoi(s, &tmp, 1, 10000))
+			cfg->lines = tmp;
+	}
 	if ((s = kvget("window.position.x")))
-		cfg->pos_x = atoi(s);
+		if (safe_atoi(s, &tmp, -32768, 32767))
+			cfg->pos_x = tmp;
 	if ((s = kvget("window.position.y")))
-		cfg->pos_y = atoi(s);
+		if (safe_atoi(s, &tmp, -32768, 32767))
+			cfg->pos_y = tmp;
 	if ((s = kvget("window.startup_mode"))) {
 		if (strcaseeq(s, "Maximized"))
 			cfg->startup_mode = ALA_START_MAXIMIZED;
@@ -999,13 +1058,17 @@ fill_config(AlaConfig *cfg)
 	if ((s = kvget("window.dynamic_title")))
 		cfg->dynamic_title = (strcaseeq(s, "true") || !strcmp(s, "1"));
 	if ((s = kvget("scrolling.history")))
-		cfg->history = atoi(s);
+		if (safe_atoi(s, &tmp, 0, 1000000))
+			cfg->history = tmp;
 	if ((s = kvget("scrolling.multiplier")))
-		cfg->multiplier = atoi(s);
+		if (safe_atoi(s, &tmp, 1, 100))
+			cfg->multiplier = tmp;
 	if ((s = kvget("window.padding.x")))
-		cfg->pad_x = atoi(s);
+		if (safe_atoi(s, &tmp, 0, 1000))
+			cfg->pad_x = tmp;
 	if ((s = kvget("window.padding.y")))
-		cfg->pad_y = atoi(s);
+		if (safe_atoi(s, &tmp, 0, 1000))
+			cfg->pad_y = tmp;
 	if ((s = kvget("window.dynamic_padding")))
 		cfg->dynamic_padding = (strcaseeq(s, "true") || !strcmp(s, "1"));
 	if ((s = kvget("window.decorations")))
@@ -1077,8 +1140,11 @@ fill_config(AlaConfig *cfg)
 	if ((s = kvget("env.TERM")))
 		cfg->term = dupstr(s);
 	for (i = 0; i < nkv; i++) {
-		if (!strncmp(kvs[i].key, "env.", 4) && kvs[i].val[0])
-			setenv(kvs[i].key + 4, kvs[i].val, 1);
+		if (!strncmp(kvs[i].key, "env.", 4) && kvs[i].val[0]) {
+			const char *ename = kvs[i].key + 4;
+			if (!is_dangerous_env(ename))
+				setenv(ename, kvs[i].val, 1);
+		}
 	}
 	apply_bindings(cfg);
 	cfg->loaded = 1;
