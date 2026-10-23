@@ -19,8 +19,9 @@ sudo make install
 
 ## Config
 
-On first run, if `~/.config/c99term` does not exist, C99Term creates it and
-copies the first Alacritty config it finds (`alacritty.toml` or `alacritty.yml`).
+On first run, if `~/.config/c99term` does not exist or exists but has no
+`c99term.toml` / `c99term.yml`, C99Term creates it and copies the first
+Alacritty config it finds (`alacritty.toml` or `alacritty.yml`).
 The original is left in place.
 
 Examples: `config/example.toml`, `config/example.yml`.

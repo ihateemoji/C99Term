@@ -7,6 +7,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <unistd.h>
 
 #include "alacritty.h"
@@ -118,7 +119,7 @@ test_params_not_ignored(void)
 		"window.dynamic_padding=true\n"
 		"scrolling.history=1234\n"
 		"scrolling.multiplier=7\n";
-	char *ov[1];
+    char *ov[1];
 
 	write_file("/tmp/c99term-params.toml", toml);
 	memset(&cfg, 0, sizeof cfg);
@@ -262,6 +263,108 @@ test_clamping_and_security(void)
 	alacritty_free(&cfg);
 }
 
+/* Empty ~/.config/c99term must still receive an Alacritty config.
+ * A directory that already has a C99Term config must not be overwritten.
+ * Each case uses its own XDG dir so the in-process import cache does not
+ * hide a second load of the same path. */
+static void
+test_empty_dir_migrates(void)
+{
+	AlaConfig cfg;
+	AlaApplied a;
+	const char *old_home = getenv("HOME");
+	const char *old_xdg = getenv("XDG_CONFIG_HOME");
+	char home[64], xdg[80];
+	char cdir[128], adir[128], src[160], dst[160], ysrc[160], ydst[160];
+	FILE *f;
+
+	snprintf(home, sizeof home, "/tmp/c99term-mig-home");
+	mkdir(home, 0755);
+	setenv("HOME", home, 1);
+
+	/* Case 1: empty C99Term dir, Alacritty TOML present. */
+	snprintf(xdg, sizeof xdg, "/tmp/c99term-mig-xdg-empty");
+	mkdir(xdg, 0755);
+	snprintf(cdir, sizeof cdir, "%s/c99term", xdg);
+	snprintf(adir, sizeof adir, "%s/alacritty", xdg);
+	mkdir(cdir, 0755);
+	mkdir(adir, 0755);
+	snprintf(src, sizeof src, "%s/alacritty.toml", adir);
+	snprintf(dst, sizeof dst, "%s/c99term.toml", cdir);
+	unlink(dst);
+	write_file(src, "window.opacity = 0.33\n");
+	setenv("XDG_CONFIG_HOME", xdg, 1);
+
+	memset(&cfg, 0, sizeof cfg);
+	alacritty_load(&cfg, NULL, NULL, 0);
+	alacritty_materialize(&cfg, &a);
+	check("empty dir migrates", cfg.loaded);
+	check("migrated opacity", a.opacity > 0.32 && a.opacity < 0.34);
+	check("migrated_from set", cfg.migrated_from[0]
+	      && strstr(cfg.migrated_from, "alacritty.toml"));
+	f = fopen(dst, "r");
+	check("copied toml exists", f != NULL);
+	if (f)
+		fclose(f);
+	alacritty_free(&cfg);
+
+	/* Case 2: C99Term config already there. Must not be replaced. */
+	snprintf(xdg, sizeof xdg, "/tmp/c99term-mig-xdg-have");
+	mkdir(xdg, 0755);
+	snprintf(cdir, sizeof cdir, "%s/c99term", xdg);
+	snprintf(adir, sizeof adir, "%s/alacritty", xdg);
+	mkdir(cdir, 0755);
+	mkdir(adir, 0755);
+	snprintf(src, sizeof src, "%s/alacritty.toml", adir);
+	snprintf(dst, sizeof dst, "%s/c99term.toml", cdir);
+	write_file(dst, "window.opacity = 0.11\n");
+	write_file(src, "window.opacity = 0.99\n");
+	setenv("XDG_CONFIG_HOME", xdg, 1);
+
+	memset(&cfg, 0, sizeof cfg);
+	alacritty_load(&cfg, NULL, NULL, 0);
+	alacritty_materialize(&cfg, &a);
+	check("existing c99term not overwritten",
+	      a.opacity > 0.10 && a.opacity < 0.12);
+	check("no second migration", cfg.migrated_from[0] == 0);
+	alacritty_free(&cfg);
+
+	/* Case 3: empty dir, YAML source only. Copied as c99term.yml. */
+	snprintf(xdg, sizeof xdg, "/tmp/c99term-mig-xdg-yaml");
+	mkdir(xdg, 0755);
+	snprintf(cdir, sizeof cdir, "%s/c99term", xdg);
+	snprintf(adir, sizeof adir, "%s/alacritty", xdg);
+	mkdir(cdir, 0755);
+	mkdir(adir, 0755);
+	snprintf(dst, sizeof dst, "%s/c99term.toml", cdir);
+	snprintf(ydst, sizeof ydst, "%s/c99term.yml", cdir);
+	snprintf(ysrc, sizeof ysrc, "%s/alacritty.yml", adir);
+	unlink(dst);
+	unlink(ydst);
+	write_file(ysrc, "window:\n  opacity: 0.44\n");
+	setenv("XDG_CONFIG_HOME", xdg, 1);
+
+	memset(&cfg, 0, sizeof cfg);
+	alacritty_load(&cfg, NULL, NULL, 0);
+	alacritty_materialize(&cfg, &a);
+	check("empty dir migrates yaml",
+	      cfg.loaded && a.opacity > 0.43 && a.opacity < 0.45);
+	f = fopen(ydst, "r");
+	check("yaml copied as yml", f != NULL);
+	if (f)
+		fclose(f);
+	check("toml not created for yaml source", access(dst, R_OK) != 0);
+	alacritty_free(&cfg);
+
+	if (old_home)
+		setenv("HOME", old_home, 1);
+	else
+		unsetenv("HOME");
+	if (old_xdg)
+		setenv("XDG_CONFIG_HOME", old_xdg, 1);
+	else
+		unsetenv("XDG_CONFIG_HOME");
+}
 
 int
 main(void)
@@ -274,6 +377,7 @@ main(void)
 	test_maximized();
 	test_ox_colors();
 	test_clamping_and_security();
+	test_empty_dir_migrates();
 	printf("\n%d passed, %d failed\n", passed, failed);
 	return failed ? 1 : 0;
 }

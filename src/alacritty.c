@@ -1266,9 +1266,12 @@ first_existing(char *out, size_t outlen)
 	return 0;
 }
 
-/* If ~/.config/c99term does not exist, create it and copy the first
- * Alacritty config we can find. We copy, we do not delete the original.
- * The directory name is lowercase (XDG); the program is C99Term. */
+/* If ~/.config/c99term does not exist, or exists but has no
+ * c99term.toml / c99term.yml, create it and copy the first Alacritty
+ * config we can find. We copy, we do not delete the original.
+ * The directory name is lowercase (XDG); the program is C99Term.
+ * An empty directory must not block a later migration: the first run
+ * may have created it before any Alacritty config existed. */
 static int
 ensure_c99term_dir(char *out, size_t outlen, char *migrated, size_t miglen)
 {
@@ -1303,15 +1306,17 @@ ensure_c99term_dir(char *out, size_t outlen, char *migrated, size_t miglen)
 				         (int)(outlen > 1 ? outlen - 1 : 0), dest);
 			return 1;
 		}
-		return 0;
-	}
-	mkdir(dir, 0755);
-	/* parent .config may be missing */
-	if (stat(dir, &st) != 0) {
-		char parent[4096];
-		snprintf(parent, sizeof parent, "%s/.config", home);
-		mkdir(parent, 0755);
+		/* Directory exists but has no C99Term config. Fall through
+		 * and migrate an Alacritty config into it. */
+	} else {
 		mkdir(dir, 0755);
+		/* parent .config may be missing */
+		if (stat(dir, &st) != 0) {
+			char parent[4096];
+			snprintf(parent, sizeof parent, "%s/.config", home);
+			mkdir(parent, 0755);
+			mkdir(dir, 0755);
+		}
 	}
 	if (!first_existing(src, sizeof src))
 		return 0;
