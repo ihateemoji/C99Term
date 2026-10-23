@@ -1,5 +1,8 @@
-# C99Term version (tracks the st base)
-VERSION = 0.9.3
+# Version scheme: <st version>.<C99Term release>
+# st 0.9.3 + C99Term release 1 = 0.9.3.1
+ST_VERSION = 0.9.3
+C99TERM_RELEASE = 1
+VERSION = $(ST_VERSION).$(C99TERM_RELEASE)
 
 # Customize below to fit your system
 
