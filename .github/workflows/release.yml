@@ -1,0 +1,66 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    name: Source release
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y build-essential pkg-config \
+            libx11-dev libxft-dev libxrender-dev libfontconfig1-dev
+
+      - name: Parse version
+        id: ver
+        run: |
+          # Tag v0.9.3.1 → 0.9.3.1
+          # Scheme: <st version>.<C99Term release>
+          # st base is 0.9.3; C99Term release 1 is 0.9.3.1
+          tag="${GITHUB_REF_NAME#v}"
+          echo "version=${tag}" >> "$GITHUB_OUTPUT"
+          echo "Version: ${tag}"
+
+      - name: Test
+        run: make test
+
+      - name: Build
+        run: make
+
+      - name: Source tarball
+        run: |
+          ver="${{ steps.ver.outputs.version }}"
+          name="C99Term-${ver}"
+          mkdir -p "/tmp/${name}"
+          tar --exclude .git --exclude c99term --exclude '*.o' \
+              --exclude src/config.h -cf - . | tar -C "/tmp/${name}" -xf -
+          tar -C /tmp -czf "${name}.tar.gz" "${name}"
+          sha256sum "${name}.tar.gz" | tee checksums.txt
+
+      - name: Publish
+        uses: softprops/action-gh-release@v2
+        with:
+          name: "C99Term ${{ steps.ver.outputs.version }}"
+          body: |
+            C99Term ${{ steps.ver.outputs.version }}
+
+            Version scheme: `<st version>.<C99Term release>`.
+            This release is st 0.9.3 plus C99Term release ${{ steps.ver.outputs.version }}.
+
+            Source tarball only. Build with a C99 compiler and the X11, Xft,
+            Xrender and fontconfig headers. `make && sudo make install`.
+          files: |
+            C99Term-${{ steps.ver.outputs.version }}.tar.gz
+            checksums.txt
+          draft: false
+          prerelease: false
