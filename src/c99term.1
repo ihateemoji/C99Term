@@ -1,0 +1,155 @@
+.TH C99TERM 1 C99Term\-VERSION
+.SH NAME
+C99Term \- C99 terminal (fork of st with an Alacritty config)
+.SH SYNOPSIS
+.B c99term
+.RB [ \-aiv ]
+.RB [ \-c
+.IR class ]
+.RB [ \-f
+.IR font ]
+.RB [ \-g
+.IR geometry ]
+.RB [ \-n
+.IR name ]
+.RB [ \-o
+.IR iofile ]
+.RB [ \-T
+.IR title ]
+.RB [ \-t
+.IR title ]
+.RB [ \-l
+.IR line ]
+.RB [ \-w
+.IR windowid ]
+.RB [ \-\-config\-file
+.IR file ]
+.RB [ \-\-option
+.IR toml ]
+.RB [ \-\-working\-directory
+.IR dir ]
+.RB [[ \-e ]
+.IR command
+.RI [ arguments ...]]
+.SH DESCRIPTION
+.B c99term
+is a C99 fork of suckless
+.BR st (1).
+It reads an Alacritty config (TOML or YAML) and adds scrollback, transparency
+and Alacritty-like clipboard and keyboard behaviour. The program is
+.B C99Term ;
+the binary is
+.BR c99term .
+.I make install
+also links it as
+.I st
+so existing launchers keep working.
+.PP
+On first run, if
+.I ~/.config/c99term
+does not exist, C99Term creates it and copies the first Alacritty config it
+finds. The original is left in place. TERM defaults to
+.BR xterm\-256color .
+.SH OPTIONS
+.TP
+.B \-a
+disable alternate screens in the terminal.
+.TP
+.BI \-c " class"
+defines the window class (default $TERM).
+.TP
+.BI \-f " font"
+defines the font to use. Overridden by the config unless this flag is set.
+.TP
+.BI \-g " geometry"
+defines the X11 geometry string.
+The form is [=][<cols>{xX}<rows>][{+-}<xoffset>{+-}<yoffset>]. See
+.BR XParseGeometry (3).
+.TP
+.B \-i
+fix the position given with the \-g option.
+.TP
+.BI \-n " name"
+defines the window instance name (default $TERM).
+.TP
+.BI \-o " iofile"
+writes all I/O to
+.I iofile.
+A value of "\-" means standard output. This is the I/O file, not a config
+option. Use \-\-option for config overrides.
+.TP
+.BI \-T " title"
+defines the window title (default 'C99Term').
+.TP
+.BI \-t " title"
+defines the window title (default 'C99Term').
+.TP
+.BI \-w " windowid"
+embeds C99Term within the window identified by
+.I windowid.
+.TP
+.BI \-l " line"
+use a tty
+.I line
+instead of a pseudo terminal. Remaining arguments are
+.BR stty (1)
+flags. See
+.BR stty (1).
+.TP
+.B \-v
+prints version information to stderr, then exits.
+.TP
+.BI \-\-config\-file " file"
+load this Alacritty or C99Term config instead of the default search path.
+.TP
+.BI \-\-option " toml"
+override a config key, for example
+.BR window.opacity=0.8 .
+May be repeated.
+.TP
+.BI \-\-working\-directory " dir"
+chdir here before starting the shell.
+.TP
+.BI \-e " command " [ " arguments " "... ]"
+execute
+.I command
+instead of the shell. Must be the last option.
+.SH SHORTCUTS
+Alacritty's Linux defaults, unless the config overrides them:
+.TP
+.B Ctrl\-Shift\-c
+Copy the selection to CLIPBOARD.
+.TP
+.B Ctrl\-Shift\-v
+Paste from CLIPBOARD.
+.TP
+.B Shift\-Insert
+Paste from PRIMARY.
+.TP
+.B Shift\-Page Up / Page Down
+Scroll a page.
+.TP
+.B Shift\-Home / End
+Scroll to the top or bottom of the history.
+.TP
+.B Ctrl\-= / Ctrl\-\- / Ctrl\-0
+Zoom in, out, or reset.
+.PP
+The wheel scrolls history. On the alternate screen (vim, less) it moves the
+cursor unless Shift is held. Typing or pasting jumps back to the bottom.
+Dragging a selection to the top or bottom edge scrolls and extends the
+highlight.
+.SH CUSTOMIZATION
+Colours, font and keys come from the Alacritty config. Compile-time defaults
+live in
+.I src/config.def.h.
+.SH AUTHORS
+See the LICENSE file. C99Term is a fork of suckless st; the original authors
+are listed there.
+.SH LICENSE
+MIT/X. See the LICENSE file.
+.SH SEE ALSO
+.BR stty (1),
+.BR alacritty (1)
+.SH BUGS
+GPU drawing, Wayland, Vi mode, search and hints are not implemented.

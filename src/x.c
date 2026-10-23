@@ -2396,9 +2396,9 @@ ala_apply(void)
 		worddelimiters = wbuf;
 	}
 	if (alacfg.path[0])
-		fprintf(stderr, "c99term: config %s\n", alacfg.path);
+		fprintf(stderr, "C99Term: config %s\n", alacfg.path);
 	if (alacfg.migrated_from[0])
-		fprintf(stderr, "c99term: copied %s into the c99term config dir\n",
+		fprintf(stderr, "C99Term: copied %s into the C99Term config dir\n",
 		        alacfg.migrated_from);
 }
 
@@ -2504,7 +2504,7 @@ run:
 		opt_cmd = argv;
 
 	if (!opt_title)
-		opt_title = (opt_line || !opt_cmd) ? "c99term" : opt_cmd[0];
+		opt_title = (opt_line || !opt_cmd) ? "C99Term" : opt_cmd[0];
 
 	setlocale(LC_CTYPE, "");
 	XSetLocaleModifiers("");

@@ -1,5 +1,5 @@
-# C99Term — st fork with an Alacritty-compatible config
-# See LICENSE for the original st MIT/X notice.
+# C99Term — C99 fork of suckless st with an Alacritty-compatible config.
+# See LICENSE for the original MIT/X notice.
 .POSIX:
 
 include config.mk
@@ -38,7 +38,7 @@ install: c99term
 	chmod 755 $(DESTDIR)$(PREFIX)/bin/c99term
 	ln -sf c99term $(DESTDIR)$(PREFIX)/bin/st
 	mkdir -p $(DESTDIR)$(MANPREFIX)/man1
-	sed "s/VERSION/$(VERSION)/g" < src/st.1 > $(DESTDIR)$(MANPREFIX)/man1/c99term.1
+	sed "s/VERSION/$(VERSION)/g" < src/c99term.1 > $(DESTDIR)$(MANPREFIX)/man1/c99term.1
 	chmod 644 $(DESTDIR)$(MANPREFIX)/man1/c99term.1
 	tic -sx src/st.info
 

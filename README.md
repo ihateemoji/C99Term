@@ -2,7 +2,7 @@
 
 A C99 fork of [st](https://st.suckless.org/) that reads an Alacritty config (TOML or YAML) and matches the clipboard, scrollback, font, and window behaviour closely enough to reuse that file.
 
-This is still st. It is not a GPU terminal, and it does not implement Vi mode, search, hints or Wayland (f*** Wayland). 
+It is not a GPU terminal, and it does not implement Vi mode, search, hints or Wayland. The original MIT/X licence and authors are in `LICENSE`.
 
 ## Build
 
@@ -15,7 +15,7 @@ make test
 sudo make install
 ```
 
-`make` produces `c99term`. `make install` also links it as `st`.
+`make` produces the `c99term` binary. `make install` also links it as `st` so existing launchers keep working, and installs `C99Term(1)`.
 
 ## Config
 

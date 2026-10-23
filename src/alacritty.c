@@ -235,10 +235,81 @@ parse_key(const char **p, const char *end, char *out, size_t outlen)
 static void
 join_key(char *dst, size_t dstlen, const char *prefix, const char *key)
 {
-	if (prefix && prefix[0])
-		snprintf(dst, dstlen, "%s.%s", prefix, key);
-	else
-		snprintf(dst, dstlen, "%s", key);
+	size_t np, nk;
+
+	if (!dst || dstlen == 0)
+		return;
+	dst[0] = 0;
+	if (!key)
+		return;
+	if (!prefix || !prefix[0]) {
+		np = strlen(key);
+		if (np >= dstlen)
+			np = dstlen - 1;
+		memcpy(dst, key, np);
+		dst[np] = 0;
+		return;
+	}
+	np = strlen(prefix);
+	nk = strlen(key);
+	if (np + 1 + nk >= dstlen) {
+		/* Truncate rather than overflow. */
+		if (np >= dstlen)
+			np = dstlen - 1;
+		memcpy(dst, prefix, np);
+		dst[np] = 0;
+		return;
+	}
+	memcpy(dst, prefix, np);
+	dst[np] = '.';
+	memcpy(dst + np + 1, key, nk + 1);
+}
+
+/* Build "prefix.N" or "prefix.len" without snprintf truncation warnings. */
+static int
+join_index(char *dst, size_t dstlen, const char *prefix, int idx)
+{
+	char num[16];
+	int n;
+
+	if (!dst || dstlen == 0 || !prefix)
+		return 0;
+	n = 0;
+	if (idx < 0)
+		idx = 0;
+	if (idx == 0)
+		num[n++] = '0';
+	else {
+		char tmp[16];
+		int t = 0, v = idx;
+		while (v && t < (int)sizeof tmp)
+			tmp[t++] = '0' + (v % 10), v /= 10;
+		while (t)
+			num[n++] = tmp[--t];
+	}
+	num[n] = 0;
+	if (strlen(prefix) + 1 + (size_t)n + 1 > dstlen)
+		return 0;
+	memcpy(dst, prefix, strlen(prefix));
+	dst[strlen(prefix)] = '.';
+	memcpy(dst + strlen(prefix) + 1, num, (size_t)n + 1);
+	return 1;
+}
+
+static int
+join_suffix(char *dst, size_t dstlen, const char *prefix, const char *suf)
+{
+	size_t np, ns;
+
+	if (!dst || dstlen == 0 || !prefix || !suf)
+		return 0;
+	np = strlen(prefix);
+	ns = strlen(suf);
+	if (np + ns + 1 > dstlen)
+		return 0;
+	memcpy(dst, prefix, np);
+	memcpy(dst + np, suf, ns + 1);
+	return 1;
 }
 
 static const char *
@@ -307,8 +378,9 @@ parse_array(const char *p, const char *end, const char *fullkey)
 			break;
 		if (*p == '"' || *p == '\'') {
 			p = parse_string(p, end, val, sizeof val);
-			snprintf(elemkey, sizeof elemkey, "%s.%d", fullkey, i++);
-			kvset(elemkey, val, 1);
+			if (join_index(elemkey, sizeof elemkey, fullkey, i))
+				kvset(elemkey, val, 1);
+			i++;
 		} else {
 			/* nested array/table not needed for alacritty imports */
 			while (p < end && *p != ',' && *p != ']')
@@ -320,9 +392,10 @@ parse_array(const char *p, const char *end, const char *fullkey)
 	}
 	if (p < end && *p == ']')
 		p++;
-	snprintf(elemkey, sizeof elemkey, "%s.len", fullkey);
-	snprintf(val, sizeof val, "%d", i);
-	kvset(elemkey, val, 0);
+	if (join_suffix(elemkey, sizeof elemkey, fullkey, ".len")) {
+		snprintf(val, sizeof val, "%d", i);
+		kvset(elemkey, val, 0);
+	}
 	return p;
 }
 
@@ -1194,13 +1267,14 @@ first_existing(char *out, size_t outlen)
 }
 
 /* If ~/.config/c99term does not exist, create it and copy the first
- * Alacritty config we can find. We copy, we do not delete the original. */
+ * Alacritty config we can find. We copy, we do not delete the original.
+ * The directory name is lowercase (XDG); the program is C99Term. */
 static int
 ensure_c99term_dir(char *out, size_t outlen, char *migrated, size_t miglen)
 {
 	const char *xdg = getenv("XDG_CONFIG_HOME");
 	const char *home = getenv("HOME");
-	char dir[4096], dest[4112], src[4096];
+	char dir[4096], dest[4096], src[4096];
 	struct stat st;
 	FILE *in, *o;
 	char buf[4096];
@@ -1216,13 +1290,17 @@ ensure_c99term_dir(char *out, size_t outlen, char *migrated, size_t miglen)
 		return 0;
 	if (stat(dir, &st) == 0 && S_ISDIR(st.st_mode)) {
 		if (access(dest, R_OK) == 0) {
-			snprintf(out, outlen, "%s", dest);
+			if (out && outlen)
+				snprintf(out, outlen, "%.*s",
+				         (int)(outlen > 1 ? outlen - 1 : 0), dest);
 			return 1;
 		}
 		if (!join2(dest, sizeof dest, dir, "c99term.yml", '/'))
 			return 0;
 		if (access(dest, R_OK) == 0) {
-			snprintf(out, outlen, "%s", dest);
+			if (out && outlen)
+				snprintf(out, outlen, "%.*s",
+				         (int)(outlen > 1 ? outlen - 1 : 0), dest);
 			return 1;
 		}
 		return 0;
@@ -1291,9 +1369,10 @@ ensure_c99term_dir(char *out, size_t outlen, char *migrated, size_t miglen)
 		fwrite(buf, 1, n, o);
 	fclose(in);
 	fclose(o);
-	snprintf(out, outlen, "%s", dest);
-	if (migrated)
-		snprintf(migrated, miglen, "%s", src);
+	if (outlen)
+		snprintf(out, outlen, "%.*s", (int)(outlen > 1 ? outlen - 1 : 0), dest);
+	if (migrated && miglen)
+		snprintf(migrated, miglen, "%.*s", (int)(miglen > 1 ? miglen - 1 : 0), src);
 	return 1;
 }
 

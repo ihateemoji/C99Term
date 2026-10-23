@@ -1,4 +1,4 @@
-# st version
+# C99Term version (tracks the st base)
 VERSION = 0.9.3
 
 # Customize below to fit your system
